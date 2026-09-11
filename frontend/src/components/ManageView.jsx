@@ -38,11 +38,14 @@ export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCame
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // Fetch Persons List (instant caching)
-  const fetchPersons = useCallback(async (showSpinner = false) => {
+  // Fetch Persons List from Supabase & Backend
+  const fetchPersons = useCallback(async (showSpinner = false, forceRefresh = false) => {
     try {
-      if (showSpinner && persons.length === 0) setLoading(true);
-      let url = '/api/persons?limit=100';
+      if (showSpinner) setLoading(true);
+      let url = `/api/persons?limit=100`;
+      if (forceRefresh) {
+        url += `&refresh=true&_t=${Date.now()}`;
+      }
       if (searchQuery.trim()) {
         url += `&search=${encodeURIComponent(searchQuery.trim())}`;
       }
@@ -58,11 +61,11 @@ export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCame
     } finally {
       setLoading(false);
     }
-  }, [searchQuery, persons.length]);
+  }, [searchQuery]);
 
   useEffect(() => {
-    fetchPersons(true);
-    const interval = setInterval(() => fetchPersons(false), 5000);
+    fetchPersons(true, true);
+    const interval = setInterval(() => fetchPersons(false, false), 3000);
     return () => clearInterval(interval);
   }, [fetchPersons]);
 
@@ -288,9 +291,9 @@ export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCame
             <>
               <button 
                 className="btn-glass" 
-                onClick={() => fetchPersons(true)} 
+                onClick={() => fetchPersons(true, true)} 
                 disabled={loading}
-                title="Refresh list"
+                title="Refresh list from database"
               >
                 <RefreshCw size={16} className={loading ? 'spin' : ''} />
                 <span>Refresh</span>

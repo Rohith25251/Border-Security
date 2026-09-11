@@ -247,6 +247,26 @@ class FrameProcessingEngine:
                                 alert_key = f"match_{track.track_id}_{matched_id}"
                                 if alert_key not in self.matched_alerts_sent:
                                     self.matched_alerts_sent.add(alert_key)
+                                    
+                                    # Extract enrolled database profile data for side-by-side comparison popup
+                                    prof_entry = self.face_recognizer.known_profiles.get(matched_id, {})
+                                    prof_rec = prof_entry.get("record")
+                                    db_img = prof_rec.image_url if prof_rec else ""
+                                    db_dob = prof_rec.dob if prof_rec else ""
+                                    db_notes = prof_rec.description if prof_rec else ""
+
+                                    if (not db_img or not db_notes) and self.supabase_manager:
+                                        try:
+                                            db_persons = self.supabase_manager.fetch_persons(limit=50)
+                                            for dp in db_persons:
+                                                if dp.get("id") == matched_id or dp.get("person_id") == matched_id or dp.get("name", "").lower() == matched_name.lower():
+                                                    db_img = db_img or dp.get("image_url") or dp.get("face_image_url") or ""
+                                                    db_dob = db_dob or dp.get("dob") or ""
+                                                    db_notes = db_notes or dp.get("description") or dp.get("notes") or ""
+                                                    break
+                                        except Exception as e:
+                                            logger.warning(f"Error resolving POI details for alert: {e}")
+                                    
                                     new_alerts.append(AlertEvent(
                                         camera_id=self.camera_id,
                                         camera_name=self.camera_name,
@@ -255,10 +275,16 @@ class FrameProcessingEngine:
                                         track_id=track.track_id,
                                         confidence=round(sim, 2),
                                         location=self.location,
+                                        details=f"Suspect Match: {matched_name}",
                                         metadata={
                                             "matched_person": matched_name,
                                             "person_id": matched_id,
-                                            "threat_level": "Watchlist Match",
+                                            "database_image_url": db_img,
+                                            "dob": db_dob,
+                                            "notes": db_notes,
+                                            "description": db_notes,
+                                            "similarity": round(sim * 100, 1),
+                                            "threat_level": "Critical Watchlist Match",
                                             "status": "Recognized"
                                         },
                                         frame_crop=enhanced_frame[max(0, track.box[1]):min(frame_h, track.box[3]), max(0, track.box[0]):min(frame_w, track.box[2])].copy()

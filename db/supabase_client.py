@@ -293,31 +293,46 @@ class SupabaseManager:
         self,
         limit: int = 50,
         offset: int = 0,
-        search_query: Optional[str] = None
+        search_query: Optional[str] = None,
+        force_refresh: bool = False
     ) -> List[Dict[str, Any]]:
-        """Fetch persons from memory cache or Supabase with sub-millisecond response."""
+        """Fetch persons from memory cache or Supabase with sub-millisecond response and full sync."""
         now = time.time()
         # Fast cache check for standard listing without search filter
-        if not search_query and self.cached_persons is not None and (now - self.cached_persons_time < 3.5):
+        if not force_refresh and not search_query and self.cached_persons is not None and (now - self.cached_persons_time < 2.0):
             return self.cached_persons[offset:offset + limit]
 
         if self.is_connected and self.client is not None:
             try:
-                query = self.client.table("persons_of_interest").select("*").order("created_at", desc=True)
-                if search_query:
-                    query = query.or_(f"name.ilike.%{search_query}%,notes.ilike.%{search_query}%")
+                # Try ordered fetch first
+                try:
+                    query = self.client.table("persons_of_interest").select("*").order("created_at", desc=True)
+                    res = query.execute()
+                except Exception:
+                    query = self.client.table("persons_of_interest").select("*")
+                    res = query.execute()
 
-                query = query.range(offset, offset + limit - 1)
-                res = query.execute()
                 raw_list = res.data if res.data is not None else []
                 normalized_list = [self._normalize_person_record(p) for p in raw_list]
                 
-                # Update memory cache
+                # Apply search filter in-memory if requested (robust against database column schema differences)
+                if search_query:
+                    sq = search_query.strip().lower()
+                    normalized_list = [
+                        p for p in normalized_list
+                        if sq in str(p.get("name", "")).lower()
+                        or sq in str(p.get("description", "")).lower()
+                        or sq in str(p.get("notes", "")).lower()
+                        or sq in str(p.get("dob", "")).lower()
+                    ]
+
+                # Update memory cache and local mirror
                 if not search_query and offset == 0:
                     self.cached_persons = normalized_list
                     self.cached_persons_time = now
+                    self.local_persons = list(normalized_list)
 
-                return normalized_list
+                return normalized_list[offset:offset + limit]
             except Exception as e:
                 logger.error(f"Error fetching persons from Supabase: {e}")
                 return self._filter_local_persons(limit, offset, search_query)
@@ -333,9 +348,15 @@ class SupabaseManager:
         """Filter local persons list when in offline mode."""
         res = [self._normalize_person_record(p) for p in self.local_persons]
         if search_query:
-            sq = search_query.lower()
-            res = [p for p in res if sq in str(p.get("name", "")).lower() or sq in str(p.get("description", "")).lower()]
-        res.sort(key=lambda x: x.get("timestamp", x.get("created_at", "")), reverse=True)
+            sq = search_query.strip().lower()
+            res = [
+                p for p in res 
+                if sq in str(p.get("name", "")).lower() 
+                or sq in str(p.get("description", "")).lower()
+                or sq in str(p.get("notes", "")).lower()
+                or sq in str(p.get("dob", "")).lower()
+            ]
+        res.sort(key=lambda x: str(x.get("created_at") or x.get("timestamp") or ""), reverse=True)
         return res[offset:offset + limit]
 
     def update_person(self, person_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:

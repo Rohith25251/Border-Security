@@ -126,11 +126,18 @@ class PersonUpdateRequest(BaseModel):
 
 class PersonResponse(BaseModel):
     id: str
+    person_id: Optional[str] = None
     name: str
     dob: Optional[str] = ""
     description: Optional[str] = ""
+    notes: Optional[str] = ""
+    threat_level: Optional[str] = "Suspicious"
     image_url: Optional[str] = None
     face_image_url: Optional[str] = None
     timestamp: Optional[str] = ""
+    created_at: Optional[str] = None
+
+    class Config:
+        extra = "allow"
 
 

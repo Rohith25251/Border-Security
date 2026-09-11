@@ -2931,6 +2931,19 @@ body {
   border-color: #fca5a5;
 }
 
+/* Suspect Alert Modal Animations & Responsive Styles */
+@keyframes slideInTopRight {
+  0% {
+    opacity: 0;
+    transform: translateX(40px) translateY(-10px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) translateY(0) scale(1);
+  }
+}
 
-
+.suspect-popup-anchor {
+  animation: slideInTopRight 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
 

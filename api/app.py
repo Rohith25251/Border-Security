@@ -436,13 +436,15 @@ async def delete_c2_webhook(webhook_id: str = Path(..., description="Webhook ID"
 async def get_persons(
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
-    search: Optional[str] = Query(None, description="Search by name or description")
+    search: Optional[str] = Query(None, description="Search by name or description"),
+    refresh: Optional[bool] = Query(False, description="Force database refresh")
 ):
     """Retrieve list of registered person profiles."""
     records = supabase_mgr.fetch_persons(
         limit=limit,
         offset=offset,
-        search_query=search
+        search_query=search,
+        force_refresh=bool(refresh)
     )
     return records
 

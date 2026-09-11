@@ -7,6 +7,7 @@ import ManageView from './components/ManageView';
 import AnalyticsView from './components/AnalyticsView';
 import C2ConfigModal from './components/C2ConfigModal';
 import SnapshotModal from './components/SnapshotModal';
+import SuspectAlertModal from './components/SuspectAlertModal';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('surveillance');
@@ -20,6 +21,18 @@ export default function App() {
   const [webhooks, setWebhooks] = useState([]);
   const [selectedSnapshot, setSelectedSnapshot] = useState(null);
   const [isConnected, setIsConnected] = useState(true);
+
+  // Mandatory Suspect Alert Popup State
+  const [notedSuspectIds, setNotedSuspectIds] = useState(() => {
+    try {
+      const stored = localStorage.getItem('ibvap_noted_suspects');
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const [inspectedSuspectAlert, setInspectedSuspectAlert] = useState(null);
+  const [suspectIndex, setSuspectIndex] = useState(0);
 
   // Fetch telemetry and camera status
   const fetchCameras = useCallback(async () => {
@@ -147,6 +160,43 @@ export default function App() {
     }
   };
 
+  // Find all unnoted suspect/facial recognition alerts
+  const unnotedSuspectAlerts = alerts.filter((a) => {
+    const isSuspect = a.event_type === 'face_detected' || a.metadata?.matched_person;
+    if (!isSuspect) return false;
+    const alertKey = a.id || `${a.camera_id}_${a.timestamp}`;
+    return !notedSuspectIds.has(alertKey) && a.status !== 'resolved';
+  });
+
+  const activeSuspectAlert = inspectedSuspectAlert || (unnotedSuspectAlerts.length > 0 ? unnotedSuspectAlerts[suspectIndex] || unnotedSuspectAlerts[0] : null);
+
+  // Mark Suspect Alert as Noted / Acknowledged
+  const handleMarkSuspectNoted = async (alertToNote) => {
+    if (!alertToNote) return;
+    const alertKey = alertToNote.id || `${alertToNote.camera_id}_${alertToNote.timestamp}`;
+
+    setNotedSuspectIds((prev) => {
+      const next = new Set(prev);
+      next.add(alertKey);
+      try {
+        localStorage.setItem('ibvap_noted_suspects', JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+
+    if (alertToNote.id) {
+      handleUpdateStatus(alertToNote.id, 'acknowledged');
+    }
+
+    setInspectedSuspectAlert(null);
+    setSuspectIndex(0);
+  };
+
+  const handleNavigateSuspectToThreatFeed = (alertToNote) => {
+    handleMarkSuspectNoted(alertToNote);
+    setActiveTab('threats');
+  };
+
   const unreviewedCount = alerts.filter((a) => a.status === 'new').length;
 
   return (
@@ -195,6 +245,7 @@ export default function App() {
             <ThreatFeed
               alerts={alerts}
               onSelectSnapshot={(snapshot) => setSelectedSnapshot(snapshot)}
+              onInspectSuspect={(alert) => setInspectedSuspectAlert(alert)}
             />
           )}
 
@@ -214,6 +265,19 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Real-time Mandatory Suspect Match Alert Popup (Persistent until marked noted) */}
+      {activeSuspectAlert && (
+        <SuspectAlertModal
+          alert={activeSuspectAlert}
+          totalUnnoted={unnotedSuspectAlerts.length}
+          currentIndex={suspectIndex}
+          onNext={() => setSuspectIndex((prev) => Math.min(unnotedSuspectAlerts.length - 1, prev + 1))}
+          onPrev={() => setSuspectIndex((prev) => Math.max(0, prev - 1))}
+          onMarkNoted={handleMarkSuspectNoted}
+          onNavigateToThreatFeed={handleNavigateSuspectToThreatFeed}
+        />
+      )}
 
       {/* Snapshot Inspector Modal */}
       {selectedSnapshot && (

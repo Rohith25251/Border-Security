@@ -13,7 +13,7 @@ import {
   Maximize2
 } from 'lucide-react';
 
-export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
+export default function ThreatFeed({ alerts = [], onSelectSnapshot, onInspectSuspect }) {
   const [cameraFilter, setCameraFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
 
@@ -25,6 +25,15 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
   });
 
   const getThreatBadge = (eventType, itemAlert) => {
+    const isSuspectMatch = eventType === 'face_detected' || itemAlert?.metadata?.matched_person;
+    if (isSuspectMatch) {
+      return (
+        <span className="threat-badge face" style={{ background: '#fef2f2', color: '#dc2626', borderColor: '#fecaca', fontWeight: 700 }}>
+          <UserCheck size={12} /> Suspect Match
+        </span>
+      );
+    }
+
     switch (eventType) {
       case 'tripwire_cross':
       case 'zone_intrusion':
@@ -57,12 +66,6 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
         return (
           <span className="threat-badge loitering">
             <Users size={12} /> Group ({itemAlert?.metadata?.cluster_size || itemAlert?.metadata?.group_size || 3})
-          </span>
-        );
-      case 'face_detected':
-        return (
-          <span className="threat-badge face">
-            <UserCheck size={12} /> Face Crop
           </span>
         );
       case 'night_mode_change':
@@ -108,7 +111,7 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
             Security Threat Incident Logs
           </h2>
           <p style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '2px' }}>
-            Live stream of synchronized perimeter intrusions, vehicle plates, and behavioral threats
+            Live stream of synchronized perimeter intrusions, vehicle plates, facial recognitions, and behavioral threats
           </p>
         </div>
       </div>
@@ -135,11 +138,11 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
             onChange={(e) => setTypeFilter(e.target.value)}
           >
             <option value="all">All Threat Types</option>
+            <option value="face_detected">Suspect Facial Match</option>
             <option value="intrusion">Perimeter Intrusion</option>
             <option value="tripwire_cross">Tripwire Crossing</option>
             <option value="zone_intrusion">Zone Intrusion</option>
             <option value="anpr">ANPR License Plate</option>
-            <option value="face_detected">Face Detection</option>
             <option value="loitering">Loitering</option>
             <option value="fast_movement">Fast Movement</option>
             <option value="group_clustering">Group Clustering</option>
@@ -174,11 +177,18 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
             </thead>
             <tbody>
               {filteredAlerts.map((alert) => {
+                const isSuspectMatch = alert.event_type === 'face_detected' || alert.metadata?.matched_person;
+                const matchedPerson = alert.metadata?.matched_person;
                 const plateText = alert.license_plate || alert.metadata?.plate_text || (alert.event_type === 'anpr_detected' && alert.details);
                 const imgUrl = getImageUrl(alert);
 
                 return (
-                  <tr key={alert.id || alert.timestamp + alert.camera_id}>
+                  <tr 
+                    key={alert.id || alert.timestamp + alert.camera_id}
+                    style={{
+                      background: isSuspectMatch ? '#fff5f5' : 'transparent'
+                    }}
+                  >
                     {/* Thumbnail */}
                     <td>
                       {imgUrl ? (
@@ -186,7 +196,13 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
                           src={imgUrl}
                           alt="Threat Snapshot"
                           className="threat-thumb"
-                          onClick={() => onSelectSnapshot({ ...alert, image_url: imgUrl })}
+                          onClick={() => {
+                            if (isSuspectMatch && onInspectSuspect) {
+                              onInspectSuspect(alert);
+                            } else {
+                              onSelectSnapshot({ ...alert, image_url: imgUrl });
+                            }
+                          }}
                           onError={(e) => {
                             e.target.style.display = 'none';
                             if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
@@ -203,7 +219,13 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
                           color: '#94a3b8',
                           fontSize: '0.65rem'
                         }}
-                        onClick={() => onSelectSnapshot({ ...alert, image_url: imgUrl })}
+                        onClick={() => {
+                          if (isSuspectMatch && onInspectSuspect) {
+                            onInspectSuspect(alert);
+                          } else {
+                            onSelectSnapshot({ ...alert, image_url: imgUrl });
+                          }
+                        }}
                       >
                         <Camera size={14} color="#94a3b8" />
                       </div>
@@ -220,7 +242,19 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
 
                     {/* Target & Details */}
                     <td>
-                      {plateText ? (
+                      {isSuspectMatch && matchedPerson ? (
+                        <div>
+                          <div style={{ fontWeight: 700, color: '#dc2626', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                            <span>👤 {matchedPerson}</span>
+                            <span style={{ fontSize: '0.68rem', background: '#fee2e2', color: '#991b1b', padding: '1px 6px', borderRadius: '4px' }}>
+                              MATCH
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                            {alert.details || alert.metadata?.threat_level || 'Identified against Watchlist'}
+                          </div>
+                        </div>
+                      ) : plateText ? (
                         <span className="plate-tag">{plateText}</span>
                       ) : (
                         <div>
@@ -247,11 +281,11 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
                             style={{
                               width: `${Math.round((alert.confidence || 0.85) * 100)}%`,
                               height: '100%',
-                              background: '#2563eb'
+                              background: isSuspectMatch ? '#dc2626' : '#2563eb'
                             }}
                           />
                         </div>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', fontWeight: 600 }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', fontWeight: 600, color: isSuspectMatch ? '#dc2626' : '#0f172a' }}>
                           {Math.round((alert.confidence || 0.85) * 100)}%
                         </span>
                       </div>
@@ -264,13 +298,35 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot }) {
 
                     {/* Actions */}
                     <td style={{ textAlign: 'right' }}>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => onSelectSnapshot({ ...alert, image_url: imgUrl })}
-                        title="Inspect Incident Snapshot Frame"
-                      >
-                        <Eye size={13} /> Preview
-                      </button>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
+                        {isSuspectMatch && onInspectSuspect && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            style={{
+                              background: '#ef4444',
+                              color: '#ffffff',
+                              border: 'none',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              fontWeight: 700
+                            }}
+                            onClick={() => onInspectSuspect(alert)}
+                            title="Inspect Database vs Live Suspect Match"
+                          >
+                            <UserCheck size={13} /> Inspect Match
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => onSelectSnapshot({ ...alert, image_url: imgUrl })}
+                          title="Inspect Incident Snapshot Frame"
+                        >
+                          <Eye size={13} /> Preview
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

@@ -37,8 +37,8 @@
       }
     ],
     "status": "active",
-    "created_at": "2026-09-11T13:33:45.303231+00:00",
-    "updated_at": "2026-09-11T13:33:45.303231+00:00"
+    "created_at": "2026-09-11T17:25:24.99339+00:00",
+    "updated_at": "2026-09-11T17:25:24.99339+00:00"
   },
   {
     "id": "camera3",
@@ -70,26 +70,24 @@
       }
     ],
     "status": "active",
-    "created_at": "2026-09-11T13:33:58.567993+00:00",
-    "updated_at": "2026-09-11T13:33:58.567993+00:00"
+    "created_at": "2026-09-11T17:25:25.130349+00:00",
+    "updated_at": "2026-09-11T17:25:25.130349+00:00"
   },
   {
     "id": "cam_192_0_0_4_8080",
-    "name": "Phone Caamera",
+    "name": "Camera 1 - Border Daytime",
     "ip_address": "192.0.0.4:8080",
     "rtsp_url": "http://192.0.0.4:8080/video",
-    "location": "North Perimeter Gate (192.0.0.4)",
     "fallback_file": "",
+    "location": "North Perimeter Gate (192.0.0.4)",
     "frame_skip": 2,
     "conf_threshold": 0.25,
-    "target_inference_size": [
-      640,
-      640
-    ],
     "enable_face_detection": true,
     "enable_anpr": true,
     "enable_night_mode": true,
     "fences": [],
-    "status": "active"
+    "status": "active",
+    "created_at": "2026-09-11T17:48:52.700375+00:00",
+    "updated_at": "2026-09-11T17:48:52.700375+00:00"
   }
 ]
