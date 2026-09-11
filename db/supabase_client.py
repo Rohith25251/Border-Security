@@ -41,9 +41,11 @@ class SupabaseManager:
         self.client = None
         self.is_connected = False
 
-        # Local fallback buffer for offline or mock mode
+        # Local fallback buffer and high-speed memory caches
         self.local_alerts: List[Dict[str, Any]] = []
         self.local_persons: List[Dict[str, Any]] = []
+        self.cached_persons: Optional[List[Dict[str, Any]]] = None
+        self.cached_persons_time: float = 0.0
 
         self._init_client()
 
@@ -277,9 +279,11 @@ class SupabaseManager:
                 except Exception as e2:
                     logger.error(f"Failed to insert person into Supabase: {e2}")
 
+            self.cached_persons = None
             self.local_persons.append(self._normalize_person_record(person_dict))
             return self._normalize_person_record(person_dict)
         else:
+            self.cached_persons = None
             normalized = self._normalize_person_record(person_dict)
             self.local_persons.append(normalized)
             logger.info(f"[Offline Mode] Person [{person.name}] saved locally.")
@@ -291,7 +295,12 @@ class SupabaseManager:
         offset: int = 0,
         search_query: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Fetch persons from Supabase with optional search query."""
+        """Fetch persons from memory cache or Supabase with sub-millisecond response."""
+        now = time.time()
+        # Fast cache check for standard listing without search filter
+        if not search_query and self.cached_persons is not None and (now - self.cached_persons_time < 3.5):
+            return self.cached_persons[offset:offset + limit]
+
         if self.is_connected and self.client is not None:
             try:
                 query = self.client.table("persons_of_interest").select("*").order("created_at", desc=True)
@@ -301,7 +310,14 @@ class SupabaseManager:
                 query = query.range(offset, offset + limit - 1)
                 res = query.execute()
                 raw_list = res.data if res.data is not None else []
-                return [self._normalize_person_record(p) for p in raw_list]
+                normalized_list = [self._normalize_person_record(p) for p in raw_list]
+                
+                # Update memory cache
+                if not search_query and offset == 0:
+                    self.cached_persons = normalized_list
+                    self.cached_persons_time = now
+
+                return normalized_list
             except Exception as e:
                 logger.error(f"Error fetching persons from Supabase: {e}")
                 return self._filter_local_persons(limit, offset, search_query)
@@ -342,6 +358,7 @@ class SupabaseManager:
             desc_val = filtered.get("description", "")
             filtered["notes"] = f"[DOB: {dob_val}] {desc_val}".strip() if dob_val else desc_val
 
+        self.cached_persons = None
         if self.is_connected and self.client is not None:
             try:
                 res = self.client.table("persons_of_interest").update(filtered).or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
@@ -382,6 +399,7 @@ class SupabaseManager:
         Deletes a person record from `persons_of_interest` table AND removes
         associated images from the `person-records` storage bucket.
         """
+        self.cached_persons = None
         # First retrieve image paths to delete from storage
         person_record = None
         if self.is_connected and self.client is not None:
@@ -567,9 +585,15 @@ class SupabaseManager:
 
     def insert_camera(self, camera_data: Dict[str, Any]) -> Dict[str, Any]:
         """Insert or upsert a new camera record into Supabase."""
+        allowed_cols = {
+            "id", "name", "ip_address", "rtsp_url", "fallback_file", "location",
+            "frame_skip", "conf_threshold", "enable_face_detection", "enable_anpr",
+            "enable_night_mode", "fences", "status"
+        }
+        filtered = {k: v for k, v in camera_data.items() if k in allowed_cols}
         if self.is_connected and self.client is not None:
             try:
-                res = self.client.table("cameras").upsert(camera_data).execute()
+                res = self.client.table("cameras").upsert(filtered).execute()
                 if res.data and len(res.data) > 0:
                     return res.data[0]
             except Exception as e:
@@ -578,10 +602,16 @@ class SupabaseManager:
 
     def update_camera(self, camera_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update an existing camera configuration."""
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        allowed_cols = {
+            "name", "ip_address", "rtsp_url", "fallback_file", "location",
+            "frame_skip", "conf_threshold", "enable_face_detection", "enable_anpr",
+            "enable_night_mode", "fences", "status", "updated_at"
+        }
+        filtered = {k: v for k, v in updates.items() if k in allowed_cols}
+        filtered["updated_at"] = datetime.now(timezone.utc).isoformat()
         if self.is_connected and self.client is not None:
             try:
-                res = self.client.table("cameras").update(updates).eq("id", camera_id).execute()
+                res = self.client.table("cameras").update(filtered).eq("id", camera_id).execute()
                 if res.data and len(res.data) > 0:
                     return res.data[0]
             except Exception as e:

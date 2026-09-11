@@ -1,49 +1,13 @@
 [
   {
-    "id": "camera1",
-    "name": "Camera 1 - Border Daytime",
-    "rtsp_url": "https://192.0.0.4:8080/video",
-    "fallback_file": "videos/camera1_daytime.mp4",
-    "location": "North Perimeter Gate",
-    "frame_skip": 2,
-    "conf_threshold": 0.25,
-    "target_inference_size": [
-      640,
-      640
-    ],
-    "enable_face_detection": true,
-    "enable_anpr": true,
-    "enable_night_mode": true,
-    "fences": [
-      {
-        "id": "fence_c1",
-        "name": "North Perimeter Wire",
-        "type": "line",
-        "coordinates": [
-          [
-            300,
-            100
-          ],
-          [
-            300,
-            700
-          ]
-        ]
-      }
-    ]
-  },
-  {
     "id": "camera2",
     "name": "Camera 2 - Border Night Sector",
+    "ip_address": "127.0.0.1",
     "rtsp_url": "rtsp://localhost:8554/camera2",
     "fallback_file": "videos/camera2_night.mp4",
-    "location": "Eastern Low-Light Sector",
+    "location": "Eastern Low-Light Sector (127.0.0.1)",
     "frame_skip": 2,
-    "conf_threshold": 0.40,
-    "target_inference_size": [
-      640,
-      640
-    ],
+    "conf_threshold": 0.4,
     "enable_face_detection": true,
     "enable_anpr": true,
     "enable_night_mode": true,
@@ -71,20 +35,20 @@
           ]
         ]
       }
-    ]
+    ],
+    "status": "active",
+    "created_at": "2026-09-11T13:33:45.303231+00:00",
+    "updated_at": "2026-09-11T13:33:45.303231+00:00"
   },
   {
     "id": "camera3",
     "name": "Camera 3 - Highway Checkpoint",
+    "ip_address": "127.0.0.1",
     "rtsp_url": "rtsp://localhost:8554/camera3",
     "fallback_file": "videos/camera3_highway.mp4",
-    "location": "Sector C Highway",
+    "location": "Sector C Highway (127.0.0.1)",
     "frame_skip": 2,
-    "conf_threshold": 0.40,
-    "target_inference_size": [
-      640,
-      640
-    ],
+    "conf_threshold": 0.4,
     "enable_face_detection": false,
     "enable_anpr": true,
     "enable_night_mode": false,
@@ -104,6 +68,28 @@
           ]
         ]
       }
-    ]
+    ],
+    "status": "active",
+    "created_at": "2026-09-11T13:33:58.567993+00:00",
+    "updated_at": "2026-09-11T13:33:58.567993+00:00"
+  },
+  {
+    "id": "cam_192_0_0_4_8080",
+    "name": "Phone Caamera",
+    "ip_address": "192.0.0.4:8080",
+    "rtsp_url": "http://192.0.0.4:8080/video",
+    "location": "North Perimeter Gate (192.0.0.4)",
+    "fallback_file": "",
+    "frame_skip": 2,
+    "conf_threshold": 0.25,
+    "target_inference_size": [
+      640,
+      640
+    ],
+    "enable_face_detection": true,
+    "enable_anpr": true,
+    "enable_night_mode": true,
+    "fences": [],
+    "status": "active"
   }
 ]

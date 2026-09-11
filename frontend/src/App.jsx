@@ -186,6 +186,8 @@ export default function App() {
           {activeTab === 'manage' && (
             <ManageView
               onOpenSnapshot={(snapshot) => setSelectedSnapshot(snapshot)}
+              cameras={cameras}
+              onRefreshCameras={fetchCameras}
             />
           )}
 
