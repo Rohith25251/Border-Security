@@ -25,7 +25,7 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot, onInspectSus
   });
 
   const getThreatBadge = (eventType, itemAlert) => {
-    const isSuspectMatch = eventType === 'face_detected' || itemAlert?.metadata?.matched_person;
+    const isSuspectMatch = eventType === 'face_detected' || Boolean(itemAlert?.metadata?.matched_person) || (typeof itemAlert?.details === 'string' && (itemAlert.details.includes('Suspect') || itemAlert.details.includes('Watchlist') || itemAlert.details.includes('MATCHED')));
     if (isSuspectMatch) {
       return (
         <span className="threat-badge face" style={{ background: '#fef2f2', color: '#dc2626', borderColor: '#fecaca', fontWeight: 700 }}>
@@ -177,8 +177,8 @@ export default function ThreatFeed({ alerts = [], onSelectSnapshot, onInspectSus
             </thead>
             <tbody>
               {filteredAlerts.map((alert) => {
-                const isSuspectMatch = alert.event_type === 'face_detected' || alert.metadata?.matched_person;
-                const matchedPerson = alert.metadata?.matched_person;
+                const isSuspectMatch = alert.event_type === 'face_detected' || Boolean(alert.metadata?.matched_person) || (typeof alert.details === 'string' && (alert.details.includes('Suspect') || alert.details.includes('Watchlist') || alert.details.includes('MATCHED')));
+                const matchedPerson = alert.metadata?.matched_person || (typeof alert.details === 'string' && alert.details.includes('Suspect Match:') ? alert.details.replace('Suspect Match:', '').trim() : (typeof alert.details === 'string' && alert.details.includes('MATCHED:') ? alert.details.replace('MATCHED:', '').trim() : null));
                 const plateText = alert.license_plate || alert.metadata?.plate_text || (alert.event_type === 'anpr_detected' && alert.details);
                 const imgUrl = getImageUrl(alert);
 

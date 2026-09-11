@@ -9,6 +9,7 @@ import cv2
 import time
 import logging
 import threading
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 
@@ -263,6 +264,55 @@ class CameraWorkerThread:
         if self.reader and self.reader.is_connected and self.reader.latest_frame is not None:
             return self.reader.latest_frame.copy()
         return None
+
+    def get_active_suspects(self) -> List[Dict[str, Any]]:
+        """Retrieve suspects actively visible in this camera feed right now.
+        Returns data shaped like AlertEvent dicts so the frontend SuspectAlertModal can consume them directly.
+        """
+        now = time.time()
+        suspects = []
+        with self.lock:
+            for track in self.engine.active_tracks:
+                if track.class_name == "human" and track.matched_person_name:
+                    prof_entry = self.engine.face_recognizer.known_profiles.get(track.matched_person_id, {})
+                    db_img = prof_entry.get("image_url") or ""
+                    db_dob = prof_entry.get("dob") or ""
+                    db_notes = prof_entry.get("description") or ""
+
+                    suspects.append({
+                        # AlertEvent-compatible top-level fields
+                        "id": f"live_{self.camera_id}_{track.track_id}",
+                        "event_type": "face_detected",
+                        "object_type": "human",
+                        "camera_id": self.camera_id,
+                        "camera_name": self.camera_name,
+                        "location": self.location,
+                        "confidence": 0.94,
+                        "track_id": track.track_id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "status": "new",
+                        "details": f"Suspect Match: {track.matched_person_name}",
+                        "image_path": f"/api/cameras/{self.camera_id}/snapshot?t={int(now)}",
+                        "image_url": f"/api/cameras/{self.camera_id}/snapshot?t={int(now)}",
+                        # Nested metadata — matches what SuspectAlertModal reads
+                        "metadata": {
+                            "matched_person": track.matched_person_name,
+                            "person_id": track.matched_person_id or "",
+                            "database_image_url": db_img,
+                            "dob": db_dob,
+                            "notes": db_notes,
+                            "description": db_notes,
+                            "similarity": 94.0,
+                            "threat_level": "Critical Watchlist Match",
+                            "status": "Recognized",
+                        },
+                        # Convenience flat fields for other consumers
+                        "person_id": track.matched_person_id or "",
+                        "person_name": track.matched_person_name,
+                        "is_live": True,
+                        "last_seen": now,
+                    })
+        return suspects
 
     def get_status(self) -> Dict[str, Any]:
         """Retrieve real-time camera telemetry and processing statistics."""

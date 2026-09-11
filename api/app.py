@@ -327,6 +327,12 @@ async def get_camera_snapshot(
 # ==============================================================================
 # 3. Alert Management & Real-time Logs
 # ==============================================================================
+@app.get("/api/live-suspects", tags=["Alerts"])
+async def get_live_suspects():
+    """Retrieve suspects actively visible in live camera feeds in real time."""
+    return camera_manager.get_all_active_suspects()
+
+
 @app.get("/api/alerts", response_model=List[AlertResponse], tags=["Alerts"])
 async def get_alerts(
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
@@ -374,10 +380,15 @@ async def update_alert_status(
 @app.get("/api/alerts/image/{filename}", tags=["Alerts"])
 async def get_alert_image(filename: str = Path(..., description="Image filename")):
     """Image proxy retrieving alert screenshot from Supabase Storage or local cache."""
-    # Check test_outputs local cache
-    local_path = os.path.join("test_outputs", filename)
-    if os.path.exists(local_path):
-        return FileResponse(local_path, media_type="image/jpeg")
+    # Check test_outputs local cache in all candidate subdirectories
+    candidates = [
+        os.path.join("test_outputs", "alerts", filename),
+        os.path.join("test_outputs", "faces", filename),
+        os.path.join("test_outputs", filename),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return FileResponse(c, media_type="image/jpeg")
 
     # If Supabase is connected, redirect to public Supabase Storage URL
     if supabase_mgr.is_connected:

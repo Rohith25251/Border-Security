@@ -42,6 +42,8 @@ class TrackedObject:
     matched_person_name: Optional[str] = None
     carried_objects: List[str] = field(default_factory=list)  # e.g. ['knife', 'backpack']
     harmful_object_alerted: bool = False
+    face_recog_frame: int = 0  # Frame index when face recognition was last run for this track
+    face_recog_consecutive_miss: int = 0  # Frames since last clear face detection
 
     @property
     def age(self) -> float:
@@ -96,11 +98,15 @@ class AlertEvent:
     location: str = "Border Sector A"
     image_path: str = ""
     status: str = "new"  # new -> acknowledged -> resolved
+    details: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     frame_crop: Optional[np.ndarray] = None  # In-memory cropped or marked frame for screenshot upload
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for Supabase insertion (excluding raw image arrays)."""
+        meta = dict(self.metadata) if isinstance(self.metadata, dict) else {}
+        if self.details and "details" not in meta:
+            meta["details"] = self.details
         return {
             "id": self.id,
             "camera_id": self.camera_id,
@@ -114,6 +120,6 @@ class AlertEvent:
             "location": self.location,
             "image_path": self.image_path,
             "status": self.status,
-            "metadata": self.metadata
+            "metadata": meta
         }
 

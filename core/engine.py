@@ -78,7 +78,7 @@ class FrameProcessingEngine:
         # Alert memory buffer & cached tracking state
         self.alerts_history: List[AlertEvent] = []
         self.persons_history: List[PersonRecord] = []
-        self.matched_alerts_sent: set = set()
+        self.matched_alerts_sent: Dict[str, float] = {}
         self.armed_alerts_sent: set = set()
         self.frame_index: int = 0
         self.active_tracks: List[TrackedObject] = []
@@ -87,6 +87,13 @@ class FrameProcessingEngine:
         self.is_night: bool = False
         self.on_alert_callback = None
         self.on_person_callback = None
+        # Match alert re-notification cooldown (30s per person per track)
+        self.match_alert_cooldown: float = 30.0
+        # Face recognition frame-skip intervals (frames between attempts)
+        # Matched tracks: skip 15 frames before re-confirming identity
+        # Unmatched tracks: attempt on every frame (1 frame) for instant match
+        self.FACE_SKIP_MATCHED: int = 15
+        self.FACE_SKIP_UNMATCHED: int = 1
 
         # Pre-load known face database profiles on startup
         if self.face_recognizer and self.supabase_manager:
@@ -148,9 +155,10 @@ class FrameProcessingEngine:
         start_time = time.perf_counter()
         frame_h, frame_w = frame.shape[:2]
 
-        # 0. Synchronize face database profiles periodically
+        # 0. Synchronize face database profiles in background thread (non-blocking)
         if self.face_recognizer and self.supabase_manager:
-            self.face_recognizer.sync_database_profiles(self.supabase_manager)
+            # Run sync check in background so it never blocks the AI inference loop
+            self.ocr_executor.submit(self.face_recognizer.sync_database_profiles, self.supabase_manager)
 
         # 1. Night Mode Assessment & Enhancement
         enhanced_frame = frame
@@ -225,70 +233,99 @@ class FrameProcessingEngine:
         detected_faces: List[Tuple[int, int, int, int]] = []
         if self.enable_face_detection and self.face_recognizer and self.face_detector:
             for track in active_tracks:
-                if track.class_name == "human":
-                    roi_faces = self.face_detector.detect_in_roi(enhanced_frame, track.box)
+                if track.class_name != "human":
+                    continue
+
+                # Determine frame-skip interval for this track
+                if track.matched_person_name:
+                    skip = self.FACE_SKIP_MATCHED   # already matched — re-confirm lazily
+                else:
+                    skip = self.FACE_SKIP_UNMATCHED  # unmatched — try every 1-2 frames
+
+                frames_since = self.frame_index - track.face_recog_frame
+                if frames_since < skip:
+                    if hasattr(track, "cached_face_box") and track.cached_face_box:
+                        detected_faces.append(track.cached_face_box)
+                    continue
+
+                track.face_recog_frame = self.frame_index
+                roi_faces = self.face_detector.detect_in_roi(enhanced_frame, track.box)
+
+                if roi_faces:
+                    track.cached_face_box = roi_faces[0]
                     for fx1, fy1, fx2, fy2 in roi_faces:
                         detected_faces.append((fx1, fy1, fx2, fy2))
                         face_crop = enhanced_frame[max(0, fy1):min(frame_h, fy2), max(0, fx1):min(frame_w, fx2)]
-                        if face_crop.size > 0:
-                            matched_id, matched_name, sim, is_clear, sharpness = self.face_recognizer.match_face(
-                                face_crop=face_crop,
-                                camera_id=self.camera_id,
-                                camera_name=self.camera_name,
-                                carried_objects=track.carried_objects
+                        if face_crop.size == 0:
+                            continue
+
+                        matched_id, matched_name, sim, is_clear, sharpness = self.face_recognizer.match_face(
+                            face_crop=face_crop,
+                            camera_id=self.camera_id,
+                            camera_name=self.camera_name,
+                            carried_objects=track.carried_objects
+                        )
+                        track.last_face_clarity = sharpness
+
+                        if matched_name:
+                            logger.info(
+                                f"[{self.camera_id}] Suspect Matched: {matched_name} (ID: {matched_id[:8]}) "
+                                f"Confidence: {sim*100:.1f}% Sharpness: {sharpness:.1f}"
                             )
-                            track.last_face_clarity = sharpness
+                            track.matched_person_id = matched_id
+                            track.matched_person_name = matched_name
+                            track.face_recog_consecutive_miss = 0
 
-                            # If matched with enrolled database profile (e.g. Sujitha B)
-                            if matched_name:
-                                track.matched_person_id = matched_id
-                                track.matched_person_name = matched_name
+                            alert_key = f"match_{track.track_id}_{matched_id}"
+                            now_ts = timestamp or time.time()
+                            if (now_ts - self.matched_alerts_sent.get(alert_key, 0.0)) >= self.match_alert_cooldown:
+                                self.matched_alerts_sent[alert_key] = now_ts
 
-                                alert_key = f"match_{track.track_id}_{matched_id}"
-                                if alert_key not in self.matched_alerts_sent:
-                                    self.matched_alerts_sent.add(alert_key)
-                                    
-                                    # Extract enrolled database profile data for side-by-side comparison popup
-                                    prof_entry = self.face_recognizer.known_profiles.get(matched_id, {})
-                                    prof_rec = prof_entry.get("record")
-                                    db_img = prof_rec.image_url if prof_rec else ""
-                                    db_dob = prof_rec.dob if prof_rec else ""
-                                    db_notes = prof_rec.description if prof_rec else ""
+                                # Pull profile data from in-memory cache ONLY — zero network latency
+                                prof_entry = self.face_recognizer.known_profiles.get(matched_id, {})
+                                db_img = prof_entry.get("image_url") or ""
+                                db_dob = prof_entry.get("dob") or ""
+                                db_notes = prof_entry.get("description") or ""
 
-                                    if (not db_img or not db_notes) and self.supabase_manager:
-                                        try:
-                                            db_persons = self.supabase_manager.fetch_persons(limit=50)
-                                            for dp in db_persons:
-                                                if dp.get("id") == matched_id or dp.get("person_id") == matched_id or dp.get("name", "").lower() == matched_name.lower():
-                                                    db_img = db_img or dp.get("image_url") or dp.get("face_image_url") or ""
-                                                    db_dob = db_dob or dp.get("dob") or ""
-                                                    db_notes = db_notes or dp.get("description") or dp.get("notes") or ""
-                                                    break
-                                        except Exception as e:
-                                            logger.warning(f"Error resolving POI details for alert: {e}")
-                                    
-                                    new_alerts.append(AlertEvent(
-                                        camera_id=self.camera_id,
-                                        camera_name=self.camera_name,
-                                        event_type="face_detected",
-                                        object_type="human",
-                                        track_id=track.track_id,
-                                        confidence=round(sim, 2),
-                                        location=self.location,
-                                        details=f"Suspect Match: {matched_name}",
-                                        metadata={
-                                            "matched_person": matched_name,
-                                            "person_id": matched_id,
-                                            "database_image_url": db_img,
-                                            "dob": db_dob,
-                                            "notes": db_notes,
-                                            "description": db_notes,
-                                            "similarity": round(sim * 100, 1),
-                                            "threat_level": "Critical Watchlist Match",
-                                            "status": "Recognized"
-                                        },
-                                        frame_crop=enhanced_frame[max(0, track.box[1]):min(frame_h, track.box[3]), max(0, track.box[0]):min(frame_w, track.box[2])].copy()
-                                    ))
+                                # Prepare clean crop (body bounding box)
+                                crop = None
+                                if track.box is not None:
+                                    y1, y2 = max(0, track.box[1]), min(frame_h, track.box[3])
+                                    x1, x2 = max(0, track.box[0]), min(frame_w, track.box[2])
+                                    if y2 > y1 and x2 > x1:
+                                        crop = enhanced_frame[y1:y2, x1:x2].copy()
+                                if crop is None or crop.size == 0:
+                                    crop = enhanced_frame.copy()
+
+                                new_alerts.append(AlertEvent(
+                                    camera_id=self.camera_id,
+                                    camera_name=self.camera_name,
+                                    event_type="face_detected",
+                                    object_type="human",
+                                    track_id=track.track_id,
+                                    confidence=round(sim, 2),
+                                    location=self.location,
+                                    details=f"Suspect Match: {matched_name}",
+                                    metadata={
+                                        "matched_person": matched_name,
+                                        "person_id": matched_id,
+                                        "database_image_url": db_img,
+                                        "dob": db_dob,
+                                        "notes": db_notes,
+                                        "description": db_notes,
+                                        "similarity": round(sim * 100, 1),
+                                        "threat_level": "Critical Watchlist Match",
+                                        "status": "Recognized"
+                                    },
+                                    frame_crop=crop
+                                ))
+                        else:
+                            # Count consecutive misses; clear match after 15 missed recog frames
+                            track.face_recog_consecutive_miss += 1
+                            if track.face_recog_consecutive_miss > 15 and track.matched_person_name:
+                                track.matched_person_name = None
+                                track.matched_person_id = None
+                                track.face_recog_consecutive_miss = 0
 
         self.active_tracks = active_tracks
         self.detected_faces = detected_faces
@@ -325,6 +362,15 @@ class FrameProcessingEngine:
             current_time=timestamp
         )
         for b_alert in behavior_alerts:
+            # Check if this behavior alert belongs to an identified suspect
+            trk = next((t for t in active_tracks if t.track_id == b_alert.track_id), None)
+            if trk and trk.matched_person_name:
+                # Retain suspect match category and identity for behavioral events on suspect
+                b_alert.event_type = "face_detected"
+                b_alert.details = f"Suspect Match: {trk.matched_person_name}"
+                b_alert.metadata["matched_person"] = trk.matched_person_name
+                b_alert.metadata["person_id"] = trk.matched_person_id
+                b_alert.metadata["threat_level"] = "Critical Watchlist Match"
             b_alert.frame_crop = enhanced_frame.copy()
             new_alerts.append(b_alert)
 

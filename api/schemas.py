@@ -30,6 +30,8 @@ class AlertResponse(BaseModel):
     location: str
     image_path: str = ""
     status: str = "new"
+    details: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class CameraStatusResponse(BaseModel):

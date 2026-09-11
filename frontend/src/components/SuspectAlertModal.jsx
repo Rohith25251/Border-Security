@@ -371,7 +371,7 @@ export default function SuspectAlertModal({
           </div>
         </div>
 
-        {/* Two Options Action Footer */}
+        {/* Action Footer */}
         <div
           style={{
             padding: '12px 16px',
@@ -379,77 +379,41 @@ export default function SuspectAlertModal({
             borderTop: '1px solid #e2e8f0',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '10px'
+            justifyContent: 'center'
           }}
         >
-          {/* Option 1: View in Threat Feed */}
+          {/* Action: View in Threat Feed */}
           <button
             type="button"
             onClick={() => {
               if (onNavigateToThreatFeed) onNavigateToThreatFeed(alert);
             }}
             style={{
-              flex: 1,
+              width: '100%',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '6px',
-              background: '#ffffff',
-              border: '1.5px solid #cbd5e1',
-              color: '#334155',
-              padding: '8px 12px',
-              borderRadius: '8px',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.15s ease'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#f1f5f9';
-              e.currentTarget.style.color = '#0f172a';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = '#ffffff';
-              e.currentTarget.style.color = '#334155';
-            }}
-          >
-            <ExternalLink size={14} />
-            <span>View in Threat Feed</span>
-          </button>
-
-          {/* Option 2: Noted */}
-          <button
-            type="button"
-            onClick={() => {
-              if (onMarkNoted) onMarkNoted(alert);
-            }}
-            style={{
-              flex: 1,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '6px',
-              background: '#16a34a',
-              border: '1.5px solid #15803d',
+              gap: '8px',
+              background: '#dc2626',
+              border: '1.5px solid #b91c1c',
               color: '#ffffff',
-              padding: '8px 14px',
+              padding: '10px 16px',
               borderRadius: '8px',
-              fontSize: '0.84rem',
+              fontSize: '0.86rem',
               fontWeight: 700,
               cursor: 'pointer',
-              boxShadow: '0 2px 8px rgba(22, 163, 74, 0.3)',
+              boxShadow: '0 2px 8px rgba(220, 38, 38, 0.25)',
               transition: 'all 0.15s ease'
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#15803d';
+              e.currentTarget.style.backgroundColor = '#b91c1c';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = '#16a34a';
+              e.currentTarget.style.backgroundColor = '#dc2626';
             }}
           >
-            <CheckCircle2 size={16} strokeWidth={2.5} />
-            <span>Noted</span>
+            <ExternalLink size={15} />
+            <span>View Full Details in Threat Feed</span>
           </button>
         </div>
       </div>

@@ -17,22 +17,29 @@ export default function App() {
     { camera_id: 'camera3', name: 'Camera 3 (Highway)', current_fps: 1.0, active_tracks: 0, current_brightness: 125.0, night_mode_active: false }
   ]);
   const [alerts, setAlerts] = useState([]);
+  const [persons, setPersons] = useState([]);
   const [stats, setStats] = useState(null);
   const [webhooks, setWebhooks] = useState([]);
   const [selectedSnapshot, setSelectedSnapshot] = useState(null);
   const [isConnected, setIsConnected] = useState(true);
 
-  // Mandatory Suspect Alert Popup State
-  const [notedSuspectIds, setNotedSuspectIds] = useState(() => {
-    try {
-      const stored = localStorage.getItem('ibvap_noted_suspects');
-      return stored ? new Set(JSON.parse(stored)) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
+  const [liveSuspects, setLiveSuspects] = useState([]);
   const [inspectedSuspectAlert, setInspectedSuspectAlert] = useState(null);
-  const [suspectIndex, setSuspectIndex] = useState(0);
+
+  // Fetch live suspects currently visible in camera frames
+  const fetchLiveSuspects = useCallback(async () => {
+    try {
+      const res = await fetch('/api/live-suspects');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setLiveSuspects(data);
+        }
+      }
+    } catch {
+      // Silently pass
+    }
+  }, []);
 
   // Fetch telemetry and camera status
   const fetchCameras = useCallback(async () => {
@@ -47,6 +54,21 @@ export default function App() {
       setIsConnected(true);
     } catch {
       setIsConnected(false);
+    }
+  }, []);
+
+  // Fetch persons list
+  const fetchPersons = useCallback(async () => {
+    try {
+      const res = await fetch('/api/persons?limit=100');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setPersons(data);
+        }
+      }
+    } catch {
+      // Silently pass
     }
   }, []);
 
@@ -93,21 +115,31 @@ export default function App() {
     }
   }, []);
 
-  // Initial load and periodic polling
+  // Initial load and periodic sub-second polling for 100% sync
   useEffect(() => {
     fetchCameras();
+    fetchPersons();
     fetchAlerts();
     fetchStats();
     fetchWebhooks();
+    fetchLiveSuspects();
 
-    const interval = setInterval(() => {
-      fetchCameras();
+    // Fast live suspect interval (600ms)
+    const liveInterval = setInterval(fetchLiveSuspects, 600);
+
+    // General telemetry & alerts interval (1000ms)
+    const generalInterval = setInterval(() => {
       fetchAlerts();
+      fetchCameras();
       fetchStats();
-    }, 2500);
+      fetchPersons();
+    }, 1000);
 
-    return () => clearInterval(interval);
-  }, [fetchCameras, fetchAlerts, fetchStats, fetchWebhooks]);
+    return () => {
+      clearInterval(liveInterval);
+      clearInterval(generalInterval);
+    };
+  }, [fetchCameras, fetchPersons, fetchAlerts, fetchStats, fetchWebhooks, fetchLiveSuspects]);
 
   // Update alert status
   const handleUpdateStatus = async (alertId, newStatus) => {
@@ -160,40 +192,47 @@ export default function App() {
     }
   };
 
-  // Find all unnoted suspect/facial recognition alerts
-  const unnotedSuspectAlerts = alerts.filter((a) => {
-    const isSuspect = a.event_type === 'face_detected' || a.metadata?.matched_person;
-    if (!isSuspect) return false;
-    const alertKey = a.id || `${a.camera_id}_${a.timestamp}`;
-    return !notedSuspectIds.has(alertKey) && a.status !== 'resolved';
-  });
+  // Pin alert when suspect is first detected — don't re-derive every poll tick (avoids flicker)
+  const [pinnedSuspectAlert, setPinnedSuspectAlert] = useState(null);
 
-  const activeSuspectAlert = inspectedSuspectAlert || (unnotedSuspectAlerts.length > 0 ? unnotedSuspectAlerts[suspectIndex] || unnotedSuspectAlerts[0] : null);
-
-  // Mark Suspect Alert as Noted / Acknowledged
-  const handleMarkSuspectNoted = async (alertToNote) => {
-    if (!alertToNote) return;
-    const alertKey = alertToNote.id || `${alertToNote.camera_id}_${alertToNote.timestamp}`;
-
-    setNotedSuspectIds((prev) => {
-      const next = new Set(prev);
-      next.add(alertKey);
-      try {
-        localStorage.setItem('ibvap_noted_suspects', JSON.stringify(Array.from(next)));
-      } catch {}
-      return next;
-    });
-
-    if (alertToNote.id) {
-      handleUpdateStatus(alertToNote.id, 'acknowledged');
+  useEffect(() => {
+    if (liveSuspects.length > 0) {
+      // Only update pinned alert if person changed (avoid re-render on timestamp diff)
+      const incoming = liveSuspects[0];
+      const incomingKey = `${incoming.camera_id}_${incoming.track_id}_${incoming.metadata?.matched_person || incoming.person_name}`;
+      const currentKey = pinnedSuspectAlert
+        ? `${pinnedSuspectAlert.camera_id}_${pinnedSuspectAlert.track_id}_${pinnedSuspectAlert.metadata?.matched_person || pinnedSuspectAlert.person_name}`
+        : null;
+      if (incomingKey !== currentKey) {
+        setPinnedSuspectAlert(incoming);
+        // Audible alert beep
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.3, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.4);
+        } catch (_) {}
+      }
+    } else {
+      // Suspect left camera view — clear alert
+      if (!inspectedSuspectAlert) {
+        setPinnedSuspectAlert(null);
+      }
     }
+  }, [liveSuspects, inspectedSuspectAlert]);
 
-    setInspectedSuspectAlert(null);
-    setSuspectIndex(0);
-  };
+  // Active suspect is derived in real time from live camera tracking
+  const activeSuspectAlert = inspectedSuspectAlert || pinnedSuspectAlert;
 
   const handleNavigateSuspectToThreatFeed = (alertToNote) => {
-    handleMarkSuspectNoted(alertToNote);
+    setInspectedSuspectAlert(null);
+    setPinnedSuspectAlert(null);
     setActiveTab('threats');
   };
 
@@ -238,6 +277,8 @@ export default function App() {
               onOpenSnapshot={(snapshot) => setSelectedSnapshot(snapshot)}
               cameras={cameras}
               onRefreshCameras={fetchCameras}
+              initialPersons={persons}
+              onRefreshPersons={fetchPersons}
             />
           )}
 
@@ -266,16 +307,12 @@ export default function App() {
         </main>
       </div>
 
-      {/* Real-time Mandatory Suspect Match Alert Popup (Persistent until marked noted) */}
+      {/* Real-time Live Suspect Match Alert Popup (Auto-dismisses when wanted person leaves camera) */}
       {activeSuspectAlert && (
         <SuspectAlertModal
           alert={activeSuspectAlert}
-          totalUnnoted={unnotedSuspectAlerts.length}
-          currentIndex={suspectIndex}
-          onNext={() => setSuspectIndex((prev) => Math.min(unnotedSuspectAlerts.length - 1, prev + 1))}
-          onPrev={() => setSuspectIndex((prev) => Math.max(0, prev - 1))}
-          onMarkNoted={handleMarkSuspectNoted}
           onNavigateToThreatFeed={handleNavigateSuspectToThreatFeed}
+          onClose={() => setInspectedSuspectAlert(null)}
         />
       )}
 

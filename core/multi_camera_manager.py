@@ -358,3 +358,11 @@ class MultiCameraManager:
         for cam_id, worker in self.workers.items():
             statuses.append(worker.get_status())
         return statuses
+
+    def get_all_active_suspects(self) -> List[Dict[str, Any]]:
+        """Retrieve suspects actively visible in live camera feeds right now."""
+        suspects = []
+        for worker in self.workers.values():
+            if worker.is_running:
+                suspects.extend(worker.get_active_suspects())
+        return suspects

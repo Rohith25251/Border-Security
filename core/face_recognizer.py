@@ -1,6 +1,6 @@
 """
 Face Recognition & Clarity Assessment Module for IBVAP.
-Uses OpenCV SFace Deep Neural Network (128-D Invariant Embeddings)
+Uses OpenCV SFace Deep Neural Network (128-D Invariant Embeddings) and YuNet Landmark Alignment
 to provide high-precision, low-latency facial identification against enrolled database profiles.
 """
 
@@ -9,6 +9,7 @@ import cv2
 import time
 import base64
 import logging
+import threading
 import urllib.request
 import numpy as np
 from typing import Tuple, Optional, Dict, Any, List
@@ -25,24 +26,26 @@ SFACE_DOWNLOAD_URL = "https://huggingface.co/opencv/face_recognition_sface/resol
 class FaceRecognizer:
     """
     High-precision Face Recognition Engine.
-    Leverages OpenCV SFace deep neural network embeddings for zero-shot facial matching
-    against enrolled database profiles, with sub-millisecond live inference and strict thresholding.
+    Leverages OpenCV SFace deep neural network embeddings with YuNet landmark alignment
+    for zero-shot facial matching against enrolled database profiles.
     """
 
     def __init__(
         self,
-        min_size: int = 35,
-        min_sharpness: float = 38.0,
-        similarity_threshold: float = 0.50
+        min_size: int = 25,
+        min_sharpness: float = 12.0,
+        similarity_threshold: float = 0.35
     ):
         self.min_size = min_size
         self.min_sharpness = min_sharpness
         self.similarity_threshold = similarity_threshold
 
         # In-memory POI signature index:
-        # { person_id: { "name": str, "signature": np.ndarray (1, 128), "record": PersonRecord } }
+        # { person_id: { "name": str, "signature": np.ndarray (1, 128), "record": PersonRecord,
+        #                "image_url": str, "dob": str, "description": str } }
         self.known_profiles: Dict[str, Dict[str, Any]] = {}
         self.last_sync_time: float = 0.0
+        self._sync_lock = threading.Lock()
         self.face_detector = FaceDetector()
 
         # Initialize SFace Deep Recognition Model
@@ -59,7 +62,10 @@ class FaceRecognizer:
         if not os.path.exists(sface_path) or os.path.getsize(sface_path) < 1000000:
             try:
                 logger.info("Downloading official SFace deep face recognition ONNX model...")
-                urllib.request.urlretrieve(SFACE_DOWNLOAD_URL, sface_path)
+                req = urllib.request.Request(SFACE_DOWNLOAD_URL, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    with open(sface_path, "wb") as f:
+                        f.write(resp.read())
                 logger.info(f"SFace model downloaded ({os.path.getsize(sface_path)} bytes).")
             except Exception as e:
                 logger.error(f"Failed to download SFace model: {e}")
@@ -76,7 +82,7 @@ class FaceRecognizer:
 
     def evaluate_clarity(self, face_crop: np.ndarray) -> Tuple[bool, float]:
         """
-        Check if the detected face crop has sufficient resolution, sharpness, and dynamic range.
+        Check if the detected face crop has sufficient resolution and sharpness.
         Returns: (is_clear, sharpness_score)
         """
         if face_crop is None or face_crop.size == 0:
@@ -86,43 +92,47 @@ class FaceRecognizer:
         if h < self.min_size or w < self.min_size:
             return False, 0.0
 
-        # Convert to grayscale
         if len(face_crop.shape) == 3:
             gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
         else:
             gray = face_crop
 
-        # Calculate Laplacian variance (sharpness metric)
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
         sharpness = float(laplacian.var())
-
-        # Check contrast dynamic range
-        contrast = float(np.std(gray))
-
-        is_clear = (sharpness >= self.min_sharpness) and (contrast >= 15.0)
+        is_clear = sharpness >= self.min_sharpness
         return is_clear, round(sharpness, 2)
 
     def extract_feature_vector(self, face_crop: np.ndarray) -> Optional[np.ndarray]:
         """
-        Extract 128-D deep neural network embedding from normalized face crop.
+        Extract 128-D deep neural network embedding from face crop,
+        leveraging YuNet 5-point landmark alignment for rotation & pose invariance.
         """
         if face_crop is None or face_crop.size == 0:
             return None
 
-        # Standard SFace input size: 112 x 112
-        resized = cv2.resize(face_crop, (112, 112))
-        if len(resized.shape) == 2:
-            resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
+        h, w = face_crop.shape[:2]
 
         if self.sface is not None:
             try:
+                # Attempt landmark alignment via YuNet
+                raw_faces = self.face_detector.detect_raw(face_crop)
+                if raw_faces is not None and len(raw_faces) > 0:
+                    aligned = self.sface.alignCrop(face_crop, raw_faces[0])
+                    feat = self.sface.feature(aligned)
+                    return feat
+
+                # Fallback resize if landmarks not detected inside tight crop
+                resized = cv2.resize(face_crop, (112, 112))
+                if len(resized.shape) == 2:
+                    resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
                 feat = self.sface.feature(resized)
                 return feat
             except Exception as e:
-                logger.error(f"SFace feature extraction error: {e}")
+                logger.debug(f"SFace feature extraction error: {e}")
 
         # Fallback structural feature vector
-        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        resized = cv2.resize(face_crop, (112, 112))
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY) if len(resized.shape) == 3 else resized
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         norm_gray = clahe.apply(gray)
         dct = cv2.dct(np.float32(norm_gray))
@@ -156,8 +166,9 @@ class FaceRecognizer:
                     logger.warning(f"Base64 decode error: {e}")
             elif image_input.startswith("http://") or image_input.startswith("https://"):
                 try:
-                    resp = urllib.request.urlopen(image_input, timeout=4)
-                    raw_bytes = resp.read()
+                    req = urllib.request.Request(image_input, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=6) as resp:
+                        raw_bytes = resp.read()
                     nparr = np.frombuffer(raw_bytes, np.uint8)
                     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 except Exception as e:
@@ -171,20 +182,17 @@ class FaceRecognizer:
         # Detect face inside the image
         faces = self.face_detector.detect(img)
         if faces and len(faces) > 0:
-            # Pick the largest face detected
             largest_face = max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
             fx1, fy1, fx2, fy2 = largest_face
             h, w = img.shape[:2]
-            # Add 10% padding
-            pw, ph = int((fx2 - fx1) * 0.1), int((fy2 - fy1) * 0.1)
+            pw, ph = int((fx2 - fx1) * 0.15), int((fy2 - fy1) * 0.15)
             cx1, cy1 = max(0, fx1 - pw), max(0, fy1 - ph)
             cx2, cy2 = min(w, fx2 + pw), min(h, fy2 + ph)
             face_crop = img[cy1:cy2, cx1:cx2].copy()
         else:
-            # Face already tightly cropped
             face_crop = img.copy()
 
-        # Pre-compute signature
+        # Compute deep signature
         signature = self.extract_feature_vector(face_crop)
         return face_crop, signature
 
@@ -193,7 +201,10 @@ class FaceRecognizer:
         person_id: str,
         name: str,
         signature: np.ndarray,
-        record: Optional[PersonRecord] = None
+        record: Optional[PersonRecord] = None,
+        image_url: str = "",
+        dob: str = "",
+        description: str = ""
     ):
         """Pre-index a known person's deep signature into recognition memory."""
         if signature is None:
@@ -201,7 +212,10 @@ class FaceRecognizer:
         self.known_profiles[person_id] = {
             "name": name,
             "signature": signature,
-            "record": record
+            "record": record,
+            "image_url": image_url or (record.image_url if record else "") or (record.face_image_url if record else ""),
+            "dob": dob or (record.dob if record else ""),
+            "description": description or (record.description if record else ""),
         }
         logger.info(f"Facial signature indexed in memory for: [{name}] ({person_id[:8]})")
 
@@ -215,17 +229,20 @@ class FaceRecognizer:
     def sync_database_profiles(self, supabase_mgr):
         """
         Synchronize registered persons from Supabase / local storage into memory.
-        Only runs every 10s to prevent overhead.
+        Only runs every 8s to prevent overhead. Thread-safe — safe to call from background threads.
         """
         if supabase_mgr is None:
             return
 
         now = time.time()
-        if now - self.last_sync_time < 10.0:
+        if now - self.last_sync_time < 8.0:
             return
-        self.last_sync_time = now
+
+        if not self._sync_lock.acquire(blocking=False):
+            return
 
         try:
+            self.last_sync_time = now
             persons = supabase_mgr.fetch_persons(limit=200)
             active_ids = set()
 
@@ -236,15 +253,20 @@ class FaceRecognizer:
                     continue
 
                 active_ids.add(pid)
+                p_img = p.get("image_url") or p.get("face_image_url") or ""
+                p_dob = p.get("dob") or ""
+                p_desc = p.get("description") or p.get("notes") or ""
 
-                # Skip if already indexed
+                # If already indexed with valid signature, just update flat metadata
                 if pid in self.known_profiles and self.known_profiles[pid].get("signature") is not None:
                     self.known_profiles[pid]["name"] = name
+                    self.known_profiles[pid]["image_url"] = p_img
+                    self.known_profiles[pid]["dob"] = p_dob
+                    self.known_profiles[pid]["description"] = p_desc
                     continue
 
-                img_path_or_url = p.get("image_url") or p.get("face_image_url") or ""
-                if img_path_or_url:
-                    face_crop, signature = self.process_and_extract_face_from_image(img_path_or_url)
+                if p_img:
+                    face_crop, signature = self.process_and_extract_face_from_image(p_img)
                     if signature is not None:
                         self.register_profile_signature(
                             person_id=pid,
@@ -253,10 +275,13 @@ class FaceRecognizer:
                             record=PersonRecord(
                                 id=pid,
                                 name=name,
-                                dob=p.get("dob", ""),
-                                description=p.get("description", ""),
-                                image_url=img_path_or_url
-                            )
+                                dob=p_dob,
+                                description=p_desc,
+                                image_url=p_img
+                            ),
+                            image_url=p_img,
+                            dob=p_dob,
+                            description=p_desc
                         )
 
             # Prune deleted profiles
@@ -267,6 +292,8 @@ class FaceRecognizer:
 
         except Exception as e:
             logger.warning(f"Error synchronizing face database profiles: {e}")
+        finally:
+            self._sync_lock.release()
 
     def match_face(
         self,
@@ -280,7 +307,7 @@ class FaceRecognizer:
         Returns: (matched_person_id, matched_person_name, similarity, is_clear, sharpness)
         """
         is_clear, sharpness = self.evaluate_clarity(face_crop)
-        if not is_clear or len(self.known_profiles) == 0:
+        if len(self.known_profiles) == 0:
             return None, None, 0.0, is_clear, sharpness
 
         live_feature = self.extract_feature_vector(face_crop)
@@ -297,7 +324,6 @@ class FaceRecognizer:
                 continue
 
             if self.sface is not None:
-                # SFace Cosine Match
                 try:
                     sim = float(self.sface.match(live_feature, known_sig, cv2.FaceRecognizerSF_FR_COSINE))
                 except Exception:
@@ -314,7 +340,6 @@ class FaceRecognizer:
                 best_match_id = pid
                 best_match_name = data.get("name", "Subject")
 
-        # Strict threshold check: SFace Cosine threshold >= 0.50
         if best_match_id and best_sim >= self.similarity_threshold:
             return best_match_id, best_match_name, best_sim, True, sharpness
 

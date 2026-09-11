@@ -5,10 +5,12 @@ Handles direct CRUD operations on the `alerts` table and JPEG screenshot uploads
 
 import os
 import cv2
+import json
 import time
 import uuid
 import base64
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import numpy as np
@@ -25,6 +27,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "alert-images")
 PERSONS_BUCKET = os.getenv("SUPABASE_PERSONS_BUCKET", "person-records")
+PERSONS_CACHE_FILE = os.path.join("test_outputs", "persons_cache.json")
 
 
 class SupabaseManager:
@@ -41,13 +44,37 @@ class SupabaseManager:
         self.client = None
         self.is_connected = False
 
+        # Asynchronous background upload pool
+        self._upload_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="StorageUploader")
+
         # Local fallback buffer and high-speed memory caches
         self.local_alerts: List[Dict[str, Any]] = []
-        self.local_persons: List[Dict[str, Any]] = []
-        self.cached_persons: Optional[List[Dict[str, Any]]] = None
-        self.cached_persons_time: float = 0.0
+        self.local_persons: List[Dict[str, Any]] = self._load_local_persons_cache()
+        self.cached_persons: Optional[List[Dict[str, Any]]] = list(self.local_persons) if self.local_persons else None
+        self.cached_persons_time: float = time.time() if self.local_persons else 0.0
 
         self._init_client()
+
+    def _load_local_persons_cache(self) -> List[Dict[str, Any]]:
+        """Load persistent cache of persons from local JSON file."""
+        try:
+            if os.path.exists(PERSONS_CACHE_FILE):
+                with open(PERSONS_CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return [self._normalize_person_record(p) for p in data]
+        except Exception as e:
+            logger.warning(f"Could not load local persons cache: {e}")
+        return []
+
+    def _save_local_persons_cache(self, records: List[Dict[str, Any]]):
+        """Save persistent cache of persons to local JSON file."""
+        try:
+            os.makedirs("test_outputs", exist_ok=True)
+            with open(PERSONS_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(records, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not save local persons cache: {e}")
 
     def _init_client(self):
         """Initialize the Supabase client."""
@@ -61,15 +88,47 @@ class SupabaseManager:
             self.client: Client = create_client(self.supabase_url, self.supabase_key)
             self.is_connected = True
             logger.info(f"Supabase client successfully initialized for {self.supabase_url}")
+            # Trigger initial background fetch of persons to warm cache
+            self._upload_pool.submit(self._background_sync_persons)
         except Exception as e:
             logger.error(f"Failed to connect to Supabase: {e}. Falling back to local mode.")
             self.is_connected = False
 
+    def _background_sync_persons(self):
+        """Warm in-memory person cache in background without blocking."""
+        try:
+            if self.is_connected and self.client is not None:
+                query = self.client.table("persons_of_interest").select("*").order("created_at", desc=True)
+                res = query.execute()
+                raw_list = res.data if res.data is not None else []
+                normalized_list = [self._normalize_person_record(p) for p in raw_list]
+                self.cached_persons = normalized_list
+                self.cached_persons_time = time.time()
+                self.local_persons = list(normalized_list)
+                self._save_local_persons_cache(normalized_list)
+                logger.info(f"Background sync loaded {len(normalized_list)} person records from Supabase.")
+        except Exception as e:
+            logger.warning(f"Initial background person sync error: {e}")
+
+    def _async_upload_storage(self, target_bucket: str, storage_path: str, file_bytes: bytes):
+        """Worker task to execute remote storage upload non-blockingly."""
+        if not self.is_connected or self.client is None:
+            return
+        try:
+            self.client.storage.from_(target_bucket).upload(
+                path=storage_path,
+                file=file_bytes,
+                file_options={"content-type": "image/jpeg", "x-upsert": "true"}
+            )
+            logger.info(f"Async image uploaded to Supabase Storage [{target_bucket}]: {storage_path}")
+        except Exception as e:
+            logger.warning(f"Async storage upload error for {storage_path}: {e}")
+
     def upload_screenshot(self, frame: np.ndarray, file_name: str, bucket: str = None, folder: str = "alerts") -> str:
         """
-        Compresses an in-memory frame as JPEG, saves a local cached copy in test_outputs/
-        and uploads it to the Supabase Storage bucket if connected.
-        Returns the public URL or relative image filename.
+        Compresses frame as JPEG, saves locally instantly (<1ms),
+        and submits async upload to Supabase Storage.
+        Returns the public URL or relative image filename immediately.
         """
         if frame is None or frame.size == 0:
             return ""
@@ -92,26 +151,17 @@ class SupabaseManager:
         except Exception as e:
             logger.error(f"Failed to write local image cache {local_path}: {e}")
 
-        # Upload to Supabase Storage if connected
-        if self.is_connected and self.client is not None:
-            try:
-                storage_path = f"{folder}/{file_name}"
-                res = self.client.storage.from_(target_bucket).upload(
-                    path=storage_path,
-                    file=file_bytes,
-                    file_options={"content-type": "image/jpeg", "x-upsert": "true"}
-                )
-                public_url = self.client.storage.from_(target_bucket).get_public_url(storage_path)
-                logger.info(f"Image uploaded to Supabase Storage [{target_bucket}]: {public_url}")
-                return public_url
-            except Exception as e:
-                logger.error(f"Supabase storage upload failed to [{target_bucket}]: {e}. Using local cache.")
-                return f"/api/persons/image/{folder}/{file_name}"
+        # Construct public URL and dispatch async remote upload
+        storage_path = f"{folder}/{file_name}"
+        if self.is_connected and self.supabase_url:
+            public_url = f"{self.supabase_url}/storage/v1/object/public/{target_bucket}/{storage_path}"
+            self._upload_pool.submit(self._async_upload_storage, target_bucket, storage_path, file_bytes)
+            return public_url
         else:
             return f"/api/persons/image/{folder}/{file_name}"
 
     def upload_base64_image(self, base64_str: str, file_name: str, bucket: str = None, folder: str = "faces") -> str:
-        """Decode base64 image data URL, save locally and upload to Supabase Storage."""
+        """Decode base64 image data URL, save locally instantly, and dispatch async Supabase upload."""
         if not base64_str or not base64_str.startswith("data:image/"):
             return base64_str
 
@@ -127,20 +177,11 @@ class SupabaseManager:
             with open(local_path, "wb") as f:
                 f.write(image_bytes)
 
-            if self.is_connected and self.client is not None:
-                try:
-                    storage_path = f"{folder}/{file_name}"
-                    self.client.storage.from_(target_bucket).upload(
-                        path=storage_path,
-                        file=image_bytes,
-                        file_options={"content-type": "image/jpeg", "x-upsert": "true"}
-                    )
-                    public_url = self.client.storage.from_(target_bucket).get_public_url(storage_path)
-                    logger.info(f"Base64 image uploaded to Supabase Storage [{target_bucket}]: {public_url}")
-                    return public_url
-                except Exception as e:
-                    logger.warning(f"Failed to upload decoded base64 to Supabase storage: {e}. Using local proxy.")
-                    return f"/api/persons/image/{folder}/{file_name}"
+            storage_path = f"{folder}/{file_name}"
+            if self.is_connected and self.supabase_url:
+                public_url = f"{self.supabase_url}/storage/v1/object/public/{target_bucket}/{storage_path}"
+                self._upload_pool.submit(self._async_upload_storage, target_bucket, storage_path, image_bytes)
+                return public_url
             else:
                 return f"/api/persons/image/{folder}/{file_name}"
         except Exception as e:
@@ -161,12 +202,27 @@ class SupabaseManager:
             alert_dict["image_path"] = image_url or file_name
             alert.image_path = image_url or file_name
 
+        # Ensure details is in alert_dict if available
+        if alert.details and not alert_dict.get("details"):
+            alert_dict["details"] = alert.details
+
         if self.is_connected and self.client is not None:
             try:
-                response = self.client.table("alerts").insert(alert_dict).execute()
+                # Remove details from root dict before inserting into Supabase if alerts table lacks details column
+                insert_payload = dict(alert_dict)
+                if "details" in insert_payload:
+                    # ensure details is preserved in metadata
+                    if "metadata" not in insert_payload or not isinstance(insert_payload["metadata"], dict):
+                        insert_payload["metadata"] = {}
+                    insert_payload["metadata"]["details"] = insert_payload.pop("details")
+
+                response = self.client.table("alerts").insert(insert_payload).execute()
                 if response.data and len(response.data) > 0:
-                    logger.info(f"Alert [{alert.id[:8]}] inserted into Supabase `alerts` table.")
-                    return response.data[0]
+                    logger.info(f"Alert [{alert.id[:8]}] inserted into Supabase `alerts` table: {alert.event_type} - {alert.details or ''}")
+                    inserted_row = dict(response.data[0])
+                    if alert.details and not inserted_row.get("details"):
+                        inserted_row["details"] = alert.details
+                    return inserted_row
                 return alert_dict
             except Exception as e:
                 logger.error(f"Failed to insert alert into Supabase: {e}")
@@ -331,6 +387,7 @@ class SupabaseManager:
                     self.cached_persons = normalized_list
                     self.cached_persons_time = now
                     self.local_persons = list(normalized_list)
+                    self._save_local_persons_cache(normalized_list)
 
                 return normalized_list[offset:offset + limit]
             except Exception as e:
@@ -384,7 +441,12 @@ class SupabaseManager:
             try:
                 res = self.client.table("persons_of_interest").update(filtered).or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
                 if res.data and len(res.data) > 0:
-                    return self._normalize_person_record(res.data[0])
+                    updated = self._normalize_person_record(res.data[0])
+                    for i, p in enumerate(self.local_persons):
+                        if p.get("id") == person_id or p.get("person_id") == person_id:
+                            self.local_persons[i] = updated
+                    self._save_local_persons_cache(self.local_persons)
+                    return updated
             except Exception as e:
                 # Fallback to legacy columns update
                 try:
@@ -398,7 +460,12 @@ class SupabaseManager:
 
                     res = self.client.table("persons_of_interest").update(legacy_updates).or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
                     if res.data and len(res.data) > 0:
-                        return self._normalize_person_record(res.data[0])
+                        updated = self._normalize_person_record(res.data[0])
+                        for i, p in enumerate(self.local_persons):
+                            if p.get("id") == person_id or p.get("person_id") == person_id:
+                                self.local_persons[i] = updated
+                        self._save_local_persons_cache(self.local_persons)
+                        return updated
                 except Exception as e2:
                     logger.error(f"Error updating person in Supabase: {e2}")
 
@@ -406,13 +473,17 @@ class SupabaseManager:
             for p in self.local_persons:
                 if p.get("id") == person_id or p.get("person_id") == person_id:
                     p.update(filtered)
-                    return self._normalize_person_record(p)
+                    updated = self._normalize_person_record(p)
+                    self._save_local_persons_cache(self.local_persons)
+                    return updated
             return None
         else:
             for p in self.local_persons:
                 if p.get("id") == person_id or p.get("person_id") == person_id:
                     p.update(filtered)
-                    return self._normalize_person_record(p)
+                    updated = self._normalize_person_record(p)
+                    self._save_local_persons_cache(self.local_persons)
+                    return updated
             return None
 
     def delete_person(self, person_id: str) -> bool:
@@ -444,7 +515,6 @@ class SupabaseManager:
                 for key in ["face_image_url", "full_image_url"]:
                     url = person_record.get(key, "")
                     if url and "person-records" in url:
-                        # Extract storage relative path e.g. "faces/POI-001_face_..."
                         parts = url.split("person-records/")
                         if len(parts) > 1:
                             paths_to_delete.append(parts[1])
@@ -459,16 +529,40 @@ class SupabaseManager:
             try:
                 res = self.client.table("persons_of_interest").delete().or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
                 self.local_persons = [p for p in self.local_persons if p.get("id") != person_id and p.get("person_id") != person_id]
+                self._save_local_persons_cache(self.local_persons)
                 logger.info(f"Person record [{person_id}] deleted from database.")
                 return True
             except Exception as e:
                 logger.error(f"Failed to delete person record from Supabase: {e}. Removing from local cache.")
                 self.local_persons = [p for p in self.local_persons if p.get("id") != person_id and p.get("person_id") != person_id]
+                self._save_local_persons_cache(self.local_persons)
                 return True
         else:
             self.local_persons = [p for p in self.local_persons if p.get("id") != person_id and p.get("person_id") != person_id]
+            self._save_local_persons_cache(self.local_persons)
             logger.info(f"[Offline Mode] Person [{person_id}] deleted locally.")
             return True
+
+    def _normalize_alert(self, a: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize alert record, ensuring details and metadata are present."""
+        res = dict(a)
+        meta = res.get("metadata")
+        if meta is None or not isinstance(meta, dict):
+            meta = {}
+            res["metadata"] = meta
+
+        if not res.get("details"):
+            if meta.get("matched_person"):
+                res["details"] = f"Suspect Match: {meta['matched_person']}"
+            elif meta.get("details"):
+                res["details"] = meta["details"]
+            elif res.get("event_type") == "face_detected":
+                res["details"] = "Suspect Facial Recognition Match"
+            elif res.get("event_type") == "loitering":
+                res["details"] = f"Loitering detected for target #{res.get('track_id')}"
+            elif res.get("event_type") == "fast_movement":
+                res["details"] = f"Abnormal high speed movement for target #{res.get('track_id')}"
+        return res
 
     def fetch_alerts(
         self,
@@ -493,7 +587,8 @@ class SupabaseManager:
 
                 query = query.range(offset, offset + limit - 1)
                 response = query.execute()
-                return response.data if response.data is not None else []
+                raw_list = response.data if response.data is not None else []
+                return [self._normalize_alert(a) for a in raw_list]
             except Exception as e:
                 logger.error(f"Error fetching alerts from Supabase: {e}")
                 return self._filter_local_alerts(limit, offset, camera_id, event_type, status)

@@ -6,11 +6,18 @@ import {
 } from 'lucide-react';
 import AddCameraModal from './AddCameraModal';
 
-export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCameras }) {
+export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCameras, initialPersons = [], onRefreshPersons }) {
   const [activeSubTab, setActiveSubTab] = useState('persons'); // 'persons' | 'cameras'
-  const [persons, setPersons] = useState([]);
+  const [persons, setPersons] = useState(initialPersons);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Keep local persons in sync with parent props
+  useEffect(() => {
+    if (Array.isArray(initialPersons) && initialPersons.length > 0) {
+      setPersons(initialPersons);
+    }
+  }, [initialPersons]);
   
   // Modal state for Add/Edit Person
   const [showModal, setShowModal] = useState(false);
@@ -41,7 +48,9 @@ export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCame
   // Fetch Persons List from Supabase & Backend
   const fetchPersons = useCallback(async (showSpinner = false, forceRefresh = false) => {
     try {
-      if (showSpinner) setLoading(true);
+      if (showSpinner && persons.length === 0) {
+        setLoading(true);
+      }
       let url = `/api/persons?limit=100`;
       if (forceRefresh) {
         url += `&refresh=true&_t=${Date.now()}`;
@@ -54,6 +63,7 @@ export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCame
         const data = await res.json();
         if (Array.isArray(data)) {
           setPersons(data);
+          if (onRefreshPersons) onRefreshPersons(data);
         }
       }
     } catch (err) {
@@ -61,10 +71,10 @@ export default function ManageView({ onOpenSnapshot, cameras = [], onRefreshCame
     } finally {
       setLoading(false);
     }
-  }, [searchQuery]);
+  }, [searchQuery, persons.length, onRefreshPersons]);
 
   useEffect(() => {
-    fetchPersons(true, true);
+    fetchPersons(false, false);
     const interval = setInterval(() => fetchPersons(false, false), 3000);
     return () => clearInterval(interval);
   }, [fetchPersons]);

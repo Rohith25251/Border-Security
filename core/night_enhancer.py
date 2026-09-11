@@ -5,6 +5,7 @@ and notifies the engine of night mode transitions.
 """
 
 from typing import Tuple, Optional
+import time
 import cv2
 import numpy as np
 from core.models import AlertEvent
@@ -22,6 +23,7 @@ class NightEnhancer:
         self.is_night_mode: bool = False
         self.last_brightness: float = 128.0
         self._check_counter: int = 0
+        self.last_state_change_time: float = 0.0
 
     def process(self, frame: np.ndarray, camera_id: str = "camera1", camera_name: str = "Camera 1", location: str = "Border Sector") -> Tuple[np.ndarray, bool, Optional[AlertEvent]]:
         """
@@ -32,21 +34,28 @@ class NightEnhancer:
             return frame, False, None
 
         self._check_counter += 1
+        now = time.time()
         
         # Calculate true grayscale luminance
-        if self._check_counter % 5 == 1:
+        if self._check_counter % 15 == 1:
             gray_sample = cv2.cvtColor(frame[::16, ::16], cv2.COLOR_BGR2GRAY)
             mean_brightness = float(cv2.mean(gray_sample)[0])
             self.last_brightness = mean_brightness
-            new_night_state = mean_brightness < self.brightness_threshold
+            
+            # Hysteresis: prevent flapping near boundary
+            if self.is_night_mode:
+                new_night_state = mean_brightness < (self.brightness_threshold + 8.0)
+            else:
+                new_night_state = mean_brightness < (self.brightness_threshold - 5.0)
         else:
             new_night_state = self.is_night_mode
 
         state_change_alert: Optional[AlertEvent] = None
 
-        # State transition check
-        if new_night_state != self.is_night_mode:
+        # State transition check with 45s cooldown
+        if new_night_state != self.is_night_mode and (now - self.last_state_change_time >= 45.0):
             self.is_night_mode = new_night_state
+            self.last_state_change_time = now
             mode_str = "NIGHT (CLAHE Active)" if self.is_night_mode else "DAY (Standard)"
             state_change_alert = AlertEvent(
                 camera_id=camera_id,
@@ -56,6 +65,7 @@ class NightEnhancer:
                 confidence=1.0,
                 location=location,
                 frame_crop=frame.copy(),
+                details=f"Lighting Switch: {mode_str}",
                 metadata={"brightness": round(self.last_brightness, 2), "mode": mode_str}
             )
 
