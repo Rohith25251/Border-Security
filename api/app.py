@@ -23,7 +23,7 @@ try:
 except Exception:
     pass
 
-from core.models import AlertEvent
+from core.models import AlertEvent, PersonRecord
 from core.multi_camera_manager import MultiCameraManager
 from db.supabase_client import SupabaseManager
 from api.schemas import (
@@ -33,6 +33,9 @@ from api.schemas import (
     StatsResponse,
     WebhookConfigRequest,
     WebhookConfigResponse,
+    PersonCreateRequest,
+    PersonUpdateRequest,
+    PersonResponse,
 )
 from api.c2_webhook import C2WebhookDispatcher
 
@@ -357,3 +360,91 @@ async def delete_c2_webhook(webhook_id: str = Path(..., description="Webhook ID"
     if not success:
         raise HTTPException(status_code=404, detail=f"Webhook '{webhook_id}' not found")
     return {"status": "deleted", "id": webhook_id}
+
+
+# ==============================================================================
+# 6. Person Records & Profile Management (Name, DOB, Description, Image)
+# ==============================================================================
+@app.get("/api/persons", response_model=List[PersonResponse], tags=["Persons"])
+async def get_persons(
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    search: Optional[str] = Query(None, description="Search by name or description")
+):
+    """Retrieve list of registered person profiles."""
+    records = supabase_mgr.fetch_persons(
+        limit=limit,
+        offset=offset,
+        search_query=search
+    )
+    return records
+
+
+@app.post("/api/persons", response_model=PersonResponse, tags=["Persons"])
+async def create_person(body: PersonCreateRequest = Body(...)):
+    """Add a new person profile (Name, DOB, Description, Image)."""
+    record = PersonRecord(
+        name=body.name,
+        dob=body.dob or "",
+        description=body.description or "",
+        image_url=body.image_url or body.face_image_url or "",
+        face_image_url=body.image_url or body.face_image_url or ""
+    )
+    res = supabase_mgr.insert_person(record)
+    return res
+
+
+@app.patch("/api/persons/{person_id}", response_model=PersonResponse, tags=["Persons"])
+async def update_person(
+    person_id: str = Path(..., description="Person ID"),
+    body: PersonUpdateRequest = Body(...)
+):
+    """Update person details (Name, DOB, Description, Image)."""
+    updates = {}
+    if body.name is not None:
+        updates["name"] = body.name
+    if body.dob is not None:
+        updates["dob"] = body.dob
+    if body.description is not None:
+        updates["description"] = body.description
+    if body.image_url is not None:
+        updates["image_url"] = body.image_url
+        updates["face_image_url"] = body.image_url
+
+    updated = supabase_mgr.update_person(person_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Person '{person_id}' not found")
+    return updated
+
+
+@app.delete("/api/persons/{person_id}", tags=["Persons"])
+async def delete_person(person_id: str = Path(..., description="Person ID")):
+    """
+    Permanently delete a person record from the database and remove associated photo.
+    """
+    success = supabase_mgr.delete_person(person_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Failed to delete person '{person_id}'")
+    return {"status": "deleted", "id": person_id}
+
+
+@app.get("/api/persons/image/{folder}/{filename}", tags=["Persons of Interest"])
+async def get_person_image(
+    folder: str = Path(..., description="Image folder ('faces' or 'full')"),
+    filename: str = Path(..., description="Image filename")
+):
+    """Retrieve person thumbnail or full context frame image."""
+    local_path = os.path.join("test_outputs", folder, filename)
+    if os.path.exists(local_path):
+        return FileResponse(local_path, media_type="image/jpeg")
+
+    alt_path = os.path.join("test_outputs", filename)
+    if os.path.exists(alt_path):
+        return FileResponse(alt_path, media_type="image/jpeg")
+
+    if supabase_mgr.is_connected:
+        public_url = f"{supabase_mgr.supabase_url}/storage/v1/object/public/{supabase_mgr.persons_bucket}/{folder}/{filename}"
+        return JSONResponse({"url": public_url})
+
+    raise HTTPException(status_code=404, detail="Person image not found")
+

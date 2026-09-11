@@ -24,18 +24,29 @@ except Exception:
 # COCO Class Mapping
 # 0: person
 # 2: car, 3: motorcycle, 5: bus, 7: truck
+# 34: baseball bat, 43: knife, 76: scissors (Harmful / Weapons)
+# 24: backpack, 26: handbag, 28: suitcase, 39: bottle, 77: cell phone (Luggage / Items)
 COCO_HUMAN_CLASS = 0
 COCO_VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
-TARGET_CLASSES = [COCO_HUMAN_CLASS] + list(COCO_VEHICLE_CLASSES.keys())
+COCO_HARMFUL_CLASSES = {34: "baseball bat", 43: "knife", 76: "scissors"}
+COCO_LUGGAGE_CLASSES = {24: "backpack", 26: "handbag", 28: "suitcase", 39: "bottle", 77: "cell phone"}
+
+TARGET_CLASSES = (
+    [COCO_HUMAN_CLASS] + 
+    list(COCO_VEHICLE_CLASSES.keys()) + 
+    list(COCO_HARMFUL_CLASSES.keys()) + 
+    list(COCO_LUGGAGE_CLASSES.keys())
+)
 
 
 class ObjectDetector:
     """
-    YOLOv8 wrapper configured for Border Surveillance object classes (Humans and Vehicles).
+    YOLOv8 wrapper configured for Border Surveillance object classes
+    (Humans, Vehicles, Harmful Weapons/Tools, and Suspicious Luggage).
     Uses official pretrained COCO weights (yolov8n.pt or yolov8s.pt).
     """
 
-    def __init__(self, model_name: str = "yolov8n.pt", conf_threshold: float = 0.35, device: str = "auto"):
+    def __init__(self, model_name: str = "yolov8n.pt", conf_threshold: float = 0.25, device: str = "auto"):
         self.model_name = model_name
         self.conf_threshold = conf_threshold
         
@@ -59,7 +70,7 @@ class ObjectDetector:
     @torch.inference_mode()
     def detect(self, frame: np.ndarray, imgsz: int = 480) -> List[Detection]:
         """
-        Run low-latency inference on the frame and extract human & vehicle detections.
+        Run low-latency inference on the frame and extract human, vehicle & object detections.
         """
         if frame is None or frame.size == 0:
             return []
@@ -71,8 +82,7 @@ class ObjectDetector:
             classes=TARGET_CLASSES,
             imgsz=imgsz,
             verbose=False,
-            device=self.device,
-            half=True if self.device == "cuda" else False
+            device=self.device
         )
 
         detections: List[Detection] = []
@@ -95,7 +105,11 @@ class ObjectDetector:
             if cls_id == COCO_HUMAN_CLASS:
                 category = "human"
             elif cls_id in COCO_VEHICLE_CLASSES:
-                category = "vehicle"
+                category = COCO_VEHICLE_CLASSES[cls_id]
+            elif cls_id in COCO_HARMFUL_CLASSES:
+                category = COCO_HARMFUL_CLASSES[cls_id]
+            elif cls_id in COCO_LUGGAGE_CLASSES:
+                category = COCO_LUGGAGE_CLASSES[cls_id]
             else:
                 continue
 
@@ -107,4 +121,5 @@ class ObjectDetector:
             ))
 
         return detections
+
 

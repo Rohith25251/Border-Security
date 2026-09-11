@@ -12,11 +12,12 @@ import threading
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 
-from core.models import AlertEvent
+from core.models import AlertEvent, PersonRecord
 from core.virtual_fence import VirtualFence
 from core.ingestion import RTSPStreamReader
 from core.engine import FrameProcessingEngine
 from db.queue_manager import AlertQueueManager
+from db.supabase_client import SupabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,9 @@ class CameraWorkerThread:
         self,
         config: Dict[str, Any],
         alert_queue: AlertQueueManager,
+        supabase_manager: Optional[SupabaseManager] = None,
         yolo_model: str = "yolov8n.pt",
-        device: str = "cpu"
+        device: str = "auto"
     ):
         self.config = config
         self.camera_id = config.get("id", "camera1")
@@ -41,9 +43,10 @@ class CameraWorkerThread:
         self.fallback_file = config.get("fallback_file", "")
         self.location = config.get("location", "Border Sector")
         self.frame_skip = max(1, int(config.get("frame_skip", 2)))
-        self.conf_threshold = float(config.get("conf_threshold", 0.40))
+        self.conf_threshold = float(config.get("conf_threshold", 0.35))
         self.target_size = tuple(config.get("target_inference_size", [640, 640]))
         self.alert_queue = alert_queue
+        self.supabase_manager = supabase_manager or getattr(alert_queue, "supabase", None) or SupabaseManager()
 
         # Parse virtual fences
         fences: List[VirtualFence] = []
@@ -70,11 +73,13 @@ class CameraWorkerThread:
             enable_night_mode=config.get("enable_night_mode", True),
             yolo_model=yolo_model,
             conf_threshold=self.conf_threshold,
-            device=device
+            device=device,
+            supabase_manager=self.supabase_manager
         )
 
-        # Configure asynchronous alert callback from engine
+        # Configure asynchronous alert & POI callbacks from engine
         self.engine.set_alert_callback(self._on_async_alert)
+        self.engine.set_person_callback(self._on_person_captured)
 
         # Threading & status
         self.is_running = False
@@ -92,6 +97,7 @@ class CameraWorkerThread:
         self.avg_inference_time_ms = 0.0
         self.last_metrics: Dict[str, Any] = {}
         self.total_alerts_generated = 0
+        self.total_persons_captured = 0
         self.is_connected = False
         self._new_frame_event = threading.Event()
         self._latest_ai_input_frame: Optional[np.ndarray] = None
@@ -102,6 +108,16 @@ class CameraWorkerThread:
         if alerts:
             self.total_alerts_generated += len(alerts)
             self.alert_queue.push_alerts(alerts, current_time=timestamp)
+
+    def _on_person_captured(self, person: PersonRecord):
+        """Callback when a clear face / Person of Interest is identified."""
+        self.total_persons_captured += 1
+        logger.info(f"[{self.camera_id}] POI Captured: {person.person_id} ({person.name}) - Threat: {person.threat_level}")
+        try:
+            self.supabase_manager.insert_person(person)
+        except Exception as e:
+            logger.error(f"Error persisting Person of Interest: {e}")
+
 
     def start(self) -> "CameraWorkerThread":
         """Start the camera ingestion, display rendering, and AI inference worker threads."""

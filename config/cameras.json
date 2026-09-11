@@ -2,7 +2,7 @@
   {
     "id": "camera1",
     "name": "Camera 1 - Border Daytime",
-    "rtsp_url": "https://10.131.111.151:8080/video",
+    "rtsp_url": "https://192.0.0.4:8080/video",
     "fallback_file": "videos/camera1_daytime.mp4",
     "location": "North Perimeter Gate",
     "frame_skip": 2,

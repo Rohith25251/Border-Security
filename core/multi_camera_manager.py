@@ -70,6 +70,7 @@ class MultiCameraManager:
             worker = CameraWorkerThread(
                 config=cfg,
                 alert_queue=self.alert_queue,
+                supabase_manager=self.supabase_manager,
                 yolo_model=self.yolo_model,
                 device=self.device
             )

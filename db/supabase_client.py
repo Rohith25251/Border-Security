@@ -6,13 +6,15 @@ Handles direct CRUD operations on the `alerts` table and JPEG screenshot uploads
 import os
 import cv2
 import time
+import uuid
+import base64
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import numpy as np
 from dotenv import load_dotenv
 
-from core.models import AlertEvent
+from core.models import AlertEvent, PersonRecord
 
 # Load environment variables
 load_dotenv()
@@ -22,22 +24,26 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "alert-images")
+PERSONS_BUCKET = os.getenv("SUPABASE_PERSONS_BUCKET", "person-records")
 
 
 class SupabaseManager:
     """
-    Manager for interacting with Supabase Postgres database and Storage bucket.
+    Manager for interacting with Supabase Postgres database and Storage buckets
+    (`alerts`, `persons_of_interest`, `alert-images`, `person-records`).
     """
 
-    def __init__(self, supabase_url: str = None, supabase_key: str = None, bucket_name: str = None):
+    def __init__(self, supabase_url: str = None, supabase_key: str = None, bucket_name: str = None, persons_bucket: str = None):
         self.supabase_url = supabase_url or SUPABASE_URL
         self.supabase_key = supabase_key or SUPABASE_KEY
         self.bucket_name = bucket_name or STORAGE_BUCKET
+        self.persons_bucket = persons_bucket or PERSONS_BUCKET
         self.client = None
         self.is_connected = False
 
         # Local fallback buffer for offline or mock mode
         self.local_alerts: List[Dict[str, Any]] = []
+        self.local_persons: List[Dict[str, Any]] = []
 
         self._init_client()
 
@@ -57,7 +63,7 @@ class SupabaseManager:
             logger.error(f"Failed to connect to Supabase: {e}. Falling back to local mode.")
             self.is_connected = False
 
-    def upload_screenshot(self, frame: np.ndarray, file_name: str) -> str:
+    def upload_screenshot(self, frame: np.ndarray, file_name: str, bucket: str = None, folder: str = "alerts") -> str:
         """
         Compresses an in-memory frame as JPEG, saves a local cached copy in test_outputs/
         and uploads it to the Supabase Storage bucket if connected.
@@ -66,9 +72,10 @@ class SupabaseManager:
         if frame is None or frame.size == 0:
             return ""
 
-        # Ensure local test_outputs directory exists
-        os.makedirs("test_outputs", exist_ok=True)
-        local_path = os.path.join("test_outputs", file_name)
+        target_bucket = bucket or self.bucket_name
+        local_dir = os.path.join("test_outputs", folder)
+        os.makedirs(local_dir, exist_ok=True)
+        local_path = os.path.join(local_dir, file_name)
 
         # Encode and save locally for 100% reliable local preview
         success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -86,20 +93,57 @@ class SupabaseManager:
         # Upload to Supabase Storage if connected
         if self.is_connected and self.client is not None:
             try:
-                storage_path = f"alerts/{file_name}"
-                res = self.client.storage.from_(self.bucket_name).upload(
+                storage_path = f"{folder}/{file_name}"
+                res = self.client.storage.from_(target_bucket).upload(
                     path=storage_path,
                     file=file_bytes,
                     file_options={"content-type": "image/jpeg", "x-upsert": "true"}
                 )
-                public_url = self.client.storage.from_(self.bucket_name).get_public_url(storage_path)
-                logger.info(f"Screenshot uploaded to Supabase Storage: {public_url}")
+                public_url = self.client.storage.from_(target_bucket).get_public_url(storage_path)
+                logger.info(f"Image uploaded to Supabase Storage [{target_bucket}]: {public_url}")
                 return public_url
             except Exception as e:
-                logger.error(f"Supabase storage upload failed: {e}. Using local cache.")
-                return file_name
+                logger.error(f"Supabase storage upload failed to [{target_bucket}]: {e}. Using local cache.")
+                return f"/api/persons/image/{folder}/{file_name}"
         else:
-            return file_name
+            return f"/api/persons/image/{folder}/{file_name}"
+
+    def upload_base64_image(self, base64_str: str, file_name: str, bucket: str = None, folder: str = "faces") -> str:
+        """Decode base64 image data URL, save locally and upload to Supabase Storage."""
+        if not base64_str or not base64_str.startswith("data:image/"):
+            return base64_str
+
+        try:
+            header, encoded = base64_str.split(",", 1)
+            image_bytes = base64.b64decode(encoded)
+
+            target_bucket = bucket or self.persons_bucket
+            local_dir = os.path.join("test_outputs", folder)
+            os.makedirs(local_dir, exist_ok=True)
+            local_path = os.path.join(local_dir, file_name)
+
+            with open(local_path, "wb") as f:
+                f.write(image_bytes)
+
+            if self.is_connected and self.client is not None:
+                try:
+                    storage_path = f"{folder}/{file_name}"
+                    self.client.storage.from_(target_bucket).upload(
+                        path=storage_path,
+                        file=image_bytes,
+                        file_options={"content-type": "image/jpeg", "x-upsert": "true"}
+                    )
+                    public_url = self.client.storage.from_(target_bucket).get_public_url(storage_path)
+                    logger.info(f"Base64 image uploaded to Supabase Storage [{target_bucket}]: {public_url}")
+                    return public_url
+                except Exception as e:
+                    logger.warning(f"Failed to upload decoded base64 to Supabase storage: {e}. Using local proxy.")
+                    return f"/api/persons/image/{folder}/{file_name}"
+            else:
+                return f"/api/persons/image/{folder}/{file_name}"
+        except Exception as e:
+            logger.error(f"Failed to process base64 image: {e}")
+            return ""
 
     def insert_alert(self, alert: AlertEvent) -> Dict[str, Any]:
         """
@@ -111,7 +155,7 @@ class SupabaseManager:
         if alert.frame_crop is not None and not alert_dict.get("image_path"):
             ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             file_name = f"{alert.camera_id}_{alert.event_type}_{ts_str}_{alert.id[:8]}.jpg"
-            image_url = self.upload_screenshot(alert.frame_crop, file_name)
+            image_url = self.upload_screenshot(alert.frame_crop, file_name, bucket=self.bucket_name, folder="alerts")
             alert_dict["image_path"] = image_url or file_name
             alert.image_path = image_url or file_name
 
@@ -130,6 +174,262 @@ class SupabaseManager:
             self.local_alerts.append(alert_dict)
             logger.info(f"[Offline Mode] Alert [{alert.id[:8]}] recorded locally.")
             return alert_dict
+
+    # ==============================================================================
+    # Persons of Interest CRUD Operations (Name, DOB, Description, Image)
+    # ==============================================================================
+    def _normalize_person_record(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize person record fields across different database versions."""
+        rec = dict(raw)
+        person_id = rec.get("id") or rec.get("person_id") or str(uuid.uuid4())
+        rec["id"] = person_id
+        rec["person_id"] = person_id
+        
+        name = rec.get("name") or "Unidentified Subject"
+        rec["name"] = name
+
+        # Extract DOB and Description from notes if needed
+        notes = rec.get("notes") or ""
+        dob = rec.get("dob") or ""
+        desc = rec.get("description") or ""
+
+        if not dob and notes.startswith("[DOB:"):
+            try:
+                dob_part = notes.split("]")[0].replace("[DOB:", "").strip()
+                dob = dob_part
+                if not desc:
+                    desc = notes.split("]", 1)[1].strip()
+            except Exception:
+                pass
+
+        if not desc and notes:
+            desc = notes
+
+        rec["dob"] = dob
+        rec["description"] = desc
+        
+        img = rec.get("image_url") or rec.get("face_image_url") or rec.get("full_image_url") or ""
+        rec["image_url"] = img
+        rec["face_image_url"] = img
+        return rec
+
+    def insert_person(self, person: PersonRecord) -> Dict[str, Any]:
+        """
+        Uploads face crop to `person-records` bucket and inserts person record
+        into Supabase `persons_of_interest` table.
+        """
+        person_dict = person.to_dict()
+        ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+        # Handle base64 image data URL (from browser upload)
+        raw_img = person_dict.get("image_url") or person_dict.get("face_image_url") or ""
+        if raw_img and raw_img.startswith("data:image/"):
+            safe_name = "".join(c for c in person.name if c.isalnum() or c in (' ', '_', '-')).rstrip().replace(' ', '_')
+            face_fname = f"{safe_name}_{ts_str}_{person.id[:8]}.jpg"
+            saved_url = self.upload_base64_image(raw_img, face_fname, bucket=self.persons_bucket, folder="faces")
+            person_dict["image_url"] = saved_url
+            person_dict["face_image_url"] = saved_url
+            person.image_url = saved_url
+            person.face_image_url = saved_url
+
+        # Upload face crop if attached
+        if person.face_crop is not None and not person_dict.get("image_url"):
+            safe_name = "".join(c for c in person.name if c.isalnum() or c in (' ', '_', '-')).rstrip().replace(' ', '_')
+            face_fname = f"{safe_name}_{ts_str}_{person.id[:8]}.jpg"
+            face_url = self.upload_screenshot(person.face_crop, face_fname, bucket=self.persons_bucket, folder="faces")
+            person_dict["image_url"] = face_url
+            person_dict["face_image_url"] = face_url
+            person.image_url = face_url
+            person.face_image_url = face_url
+
+        # Notes fallback encoding
+        notes_val = f"[DOB: {person.dob}] {person.description}".strip() if person.dob else (person.description or "")
+        person_dict["notes"] = notes_val
+        person_dict["person_id"] = person.id
+        person_dict["camera_id"] = "camera1"
+        person_dict["camera_name"] = "Camera 1"
+        person_dict["threat_level"] = "Suspicious"
+
+        if self.is_connected and self.client is not None:
+            try:
+                # Try inserting full dictionary
+                response = self.client.table("persons_of_interest").insert(person_dict).execute()
+                if response.data and len(response.data) > 0:
+                    logger.info(f"Person [{person.name}] inserted into `persons_of_interest`.")
+                    return self._normalize_person_record(response.data[0])
+            except Exception as e:
+                # Fallback to schema without newly added columns if table hasn't run migration yet
+                try:
+                    legacy_dict = {
+                        "id": person.id,
+                        "person_id": person.id,
+                        "name": person.name,
+                        "camera_id": "camera1",
+                        "camera_name": "Camera 1",
+                        "notes": notes_val,
+                        "face_image_url": person.image_url or person.face_image_url,
+                        "threat_level": "Suspicious"
+                    }
+                    response = self.client.table("persons_of_interest").insert(legacy_dict).execute()
+                    if response.data and len(response.data) > 0:
+                        logger.info(f"Person [{person.name}] inserted using legacy columns.")
+                        return self._normalize_person_record(response.data[0])
+                except Exception as e2:
+                    logger.error(f"Failed to insert person into Supabase: {e2}")
+
+            self.local_persons.append(self._normalize_person_record(person_dict))
+            return self._normalize_person_record(person_dict)
+        else:
+            normalized = self._normalize_person_record(person_dict)
+            self.local_persons.append(normalized)
+            logger.info(f"[Offline Mode] Person [{person.name}] saved locally.")
+            return normalized
+
+    def fetch_persons(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search_query: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch persons from Supabase with optional search query."""
+        if self.is_connected and self.client is not None:
+            try:
+                query = self.client.table("persons_of_interest").select("*").order("created_at", desc=True)
+                if search_query:
+                    query = query.or_(f"name.ilike.%{search_query}%,notes.ilike.%{search_query}%")
+
+                query = query.range(offset, offset + limit - 1)
+                res = query.execute()
+                raw_list = res.data if res.data is not None else []
+                return [self._normalize_person_record(p) for p in raw_list]
+            except Exception as e:
+                logger.error(f"Error fetching persons from Supabase: {e}")
+                return self._filter_local_persons(limit, offset, search_query)
+        else:
+            return self._filter_local_persons(limit, offset, search_query)
+
+    def _filter_local_persons(
+        self,
+        limit: int,
+        offset: int,
+        search_query: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        """Filter local persons list when in offline mode."""
+        res = [self._normalize_person_record(p) for p in self.local_persons]
+        if search_query:
+            sq = search_query.lower()
+            res = [p for p in res if sq in str(p.get("name", "")).lower() or sq in str(p.get("description", "")).lower()]
+        res.sort(key=lambda x: x.get("timestamp", x.get("created_at", "")), reverse=True)
+        return res[offset:offset + limit]
+
+    def update_person(self, person_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update person record (name, dob, description, image_url)."""
+        allowed = {"name", "dob", "description", "image_url", "face_image_url", "notes"}
+        filtered = {k: v for k, v in updates.items() if k in allowed}
+
+        # Handle base64 image data URL
+        raw_img = filtered.get("image_url") or filtered.get("face_image_url") or ""
+        if raw_img and raw_img.startswith("data:image/"):
+            ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            face_fname = f"update_{ts_str}_{person_id[:8]}.jpg"
+            saved_url = self.upload_base64_image(raw_img, face_fname, bucket=self.persons_bucket, folder="faces")
+            filtered["image_url"] = saved_url
+            filtered["face_image_url"] = saved_url
+
+        # Keep notes in sync
+        if "description" in filtered or "dob" in filtered:
+            dob_val = filtered.get("dob", "")
+            desc_val = filtered.get("description", "")
+            filtered["notes"] = f"[DOB: {dob_val}] {desc_val}".strip() if dob_val else desc_val
+
+        if self.is_connected and self.client is not None:
+            try:
+                res = self.client.table("persons_of_interest").update(filtered).or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
+                if res.data and len(res.data) > 0:
+                    return self._normalize_person_record(res.data[0])
+            except Exception as e:
+                # Fallback to legacy columns update
+                try:
+                    legacy_updates = {}
+                    if "name" in filtered:
+                        legacy_updates["name"] = filtered["name"]
+                    if "notes" in filtered:
+                        legacy_updates["notes"] = filtered["notes"]
+                    if "image_url" in filtered or "face_image_url" in filtered:
+                        legacy_updates["face_image_url"] = filtered.get("image_url") or filtered.get("face_image_url")
+
+                    res = self.client.table("persons_of_interest").update(legacy_updates).or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
+                    if res.data and len(res.data) > 0:
+                        return self._normalize_person_record(res.data[0])
+                except Exception as e2:
+                    logger.error(f"Error updating person in Supabase: {e2}")
+
+            # Also update local copy
+            for p in self.local_persons:
+                if p.get("id") == person_id or p.get("person_id") == person_id:
+                    p.update(filtered)
+                    return self._normalize_person_record(p)
+            return None
+        else:
+            for p in self.local_persons:
+                if p.get("id") == person_id or p.get("person_id") == person_id:
+                    p.update(filtered)
+                    return self._normalize_person_record(p)
+            return None
+
+    def delete_person(self, person_id: str) -> bool:
+        """
+        Deletes a person record from `persons_of_interest` table AND removes
+        associated images from the `person-records` storage bucket.
+        """
+        # First retrieve image paths to delete from storage
+        person_record = None
+        if self.is_connected and self.client is not None:
+            try:
+                res = self.client.table("persons_of_interest").select("*").or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
+                if res.data and len(res.data) > 0:
+                    person_record = res.data[0]
+            except Exception:
+                pass
+
+        if not person_record:
+            for p in self.local_persons:
+                if p.get("id") == person_id or p.get("person_id") == person_id:
+                    person_record = p
+                    break
+
+        # Delete image files from Supabase Storage if found
+        if person_record and self.is_connected and self.client is not None:
+            try:
+                paths_to_delete = []
+                for key in ["face_image_url", "full_image_url"]:
+                    url = person_record.get(key, "")
+                    if url and "person-records" in url:
+                        # Extract storage relative path e.g. "faces/POI-001_face_..."
+                        parts = url.split("person-records/")
+                        if len(parts) > 1:
+                            paths_to_delete.append(parts[1])
+                if paths_to_delete:
+                    self.client.storage.from_(self.persons_bucket).remove(paths_to_delete)
+                    logger.info(f"Deleted storage files: {paths_to_delete}")
+            except Exception as e:
+                logger.warning(f"Failed to delete files from storage bucket: {e}")
+
+        # Delete record from database
+        if self.is_connected and self.client is not None:
+            try:
+                res = self.client.table("persons_of_interest").delete().or_(f"id.eq.{person_id},person_id.eq.{person_id}").execute()
+                self.local_persons = [p for p in self.local_persons if p.get("id") != person_id and p.get("person_id") != person_id]
+                logger.info(f"Person record [{person_id}] deleted from database.")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete person record from Supabase: {e}. Removing from local cache.")
+                self.local_persons = [p for p in self.local_persons if p.get("id") != person_id and p.get("person_id") != person_id]
+                return True
+        else:
+            self.local_persons = [p for p in self.local_persons if p.get("id") != person_id and p.get("person_id") != person_id]
+            logger.info(f"[Offline Mode] Person [{person_id}] deleted locally.")
+            return True
 
     def fetch_alerts(
         self,
@@ -226,6 +526,7 @@ class SupabaseManager:
         Calculate summary metrics: total alerts, breakdown by event_type, status, and camera.
         """
         alerts = self.fetch_alerts(limit=1000)
+        persons = self.fetch_persons(limit=1000)
 
         total_alerts = len(alerts)
         by_event_type: Dict[str, int] = {}
@@ -243,8 +544,10 @@ class SupabaseManager:
 
         return {
             "total_alerts": total_alerts,
+            "total_persons_of_interest": len(persons),
             "by_event_type": by_event_type,
             "by_status": by_status,
             "by_camera": by_camera,
             "is_supabase_connected": self.is_connected
         }
+

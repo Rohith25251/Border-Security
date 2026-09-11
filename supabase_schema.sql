@@ -123,4 +123,115 @@ BEGIN
             ON storage.objects FOR UPDATE
             USING (bucket_id = 'alert-images');
     END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Public Delete Access for alert-images') THEN
+        CREATE POLICY "Public Delete Access for alert-images"
+            ON storage.objects FOR DELETE
+            USING (bucket_id = 'alert-images');
+    END IF;
 END $$;
+
+-- ==============================================================================
+-- 8. Persons of Interest (POI) & Facial Recognition Table
+-- ==============================================================================
+CREATE TABLE IF NOT EXISTS public.persons_of_interest (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    person_id TEXT,
+    name TEXT NOT NULL DEFAULT 'Unidentified Subject',
+    dob TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    image_url TEXT DEFAULT '',
+    camera_id TEXT DEFAULT 'camera1',
+    camera_name TEXT DEFAULT 'Camera 1',
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    threat_level TEXT DEFAULT 'Suspicious',
+    face_image_url TEXT,
+    full_image_url TEXT,
+    detected_objects JSONB DEFAULT '[]'::jsonb,
+    facial_features JSONB DEFAULT '{}'::jsonb,
+    notes TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Migration columns if table already existed
+ALTER TABLE public.persons_of_interest ADD COLUMN IF NOT EXISTS dob TEXT DEFAULT '';
+ALTER TABLE public.persons_of_interest ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
+ALTER TABLE public.persons_of_interest ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT '';
+
+-- Performance indices for Persons of Interest
+CREATE INDEX IF NOT EXISTS idx_poi_timestamp ON public.persons_of_interest (timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_poi_person_id ON public.persons_of_interest (person_id);
+CREATE INDEX IF NOT EXISTS idx_poi_threat_level ON public.persons_of_interest (threat_level);
+CREATE INDEX IF NOT EXISTS idx_poi_camera_id ON public.persons_of_interest (camera_id);
+CREATE INDEX IF NOT EXISTS idx_poi_detected_objects ON public.persons_of_interest USING GIN (detected_objects);
+
+-- Realtime publication for Persons of Interest
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables 
+        WHERE pubname = 'supabase_realtime' 
+          AND schemaname = 'public' 
+          AND tablename = 'persons_of_interest'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.persons_of_interest;
+    END IF;
+END $$;
+
+-- Row Level Security (RLS) for `persons_of_interest`
+ALTER TABLE public.persons_of_interest ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'persons_of_interest' AND policyname = 'Allow public read access to persons_of_interest') THEN
+        CREATE POLICY "Allow public read access to persons_of_interest" ON public.persons_of_interest FOR SELECT USING (true);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'persons_of_interest' AND policyname = 'Allow public insert to persons_of_interest') THEN
+        CREATE POLICY "Allow public insert to persons_of_interest" ON public.persons_of_interest FOR INSERT WITH CHECK (true);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'persons_of_interest' AND policyname = 'Allow public update to persons_of_interest') THEN
+        CREATE POLICY "Allow public update to persons_of_interest" ON public.persons_of_interest FOR UPDATE USING (true) WITH CHECK (true);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'persons_of_interest' AND policyname = 'Allow public delete to persons_of_interest') THEN
+        CREATE POLICY "Allow public delete to persons_of_interest" ON public.persons_of_interest FOR DELETE USING (true);
+    END IF;
+END $$;
+
+-- ==============================================================================
+-- 9. Supabase Storage Setup for Persons of Interest & Faces (Bucket: `person-records`)
+-- ==============================================================================
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('person-records', 'person-records', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- Storage RLS Policies for `person-records` Bucket (Read, Upload, Update, Delete)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Public Read Access for person-records') THEN
+        CREATE POLICY "Public Read Access for person-records"
+            ON storage.objects FOR SELECT
+            USING (bucket_id = 'person-records');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Public Upload Access for person-records') THEN
+        CREATE POLICY "Public Upload Access for person-records"
+            ON storage.objects FOR INSERT
+            WITH CHECK (bucket_id = 'person-records');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Public Update Access for person-records') THEN
+        CREATE POLICY "Public Update Access for person-records"
+            ON storage.objects FOR UPDATE
+            USING (bucket_id = 'person-records');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Public Delete Access for person-records') THEN
+        CREATE POLICY "Public Delete Access for person-records"
+            ON storage.objects FOR DELETE
+            USING (bucket_id = 'person-records');
+    END IF;
+END $$;
+

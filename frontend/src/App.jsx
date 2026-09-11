@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar';
 import CameraGrid from './components/CameraGrid';
 import DirectCCTVView from './components/DirectCCTVView';
 import ThreatFeed from './components/ThreatFeed';
+import ManageView from './components/ManageView';
 import AnalyticsView from './components/AnalyticsView';
 import C2ConfigModal from './components/C2ConfigModal';
 import SnapshotModal from './components/SnapshotModal';
@@ -178,6 +179,12 @@ export default function App() {
             <DirectCCTVView
               cameras={cameras}
               onSelectSnapshot={(snapshot) => setSelectedSnapshot(snapshot)}
+            />
+          )}
+
+          {activeTab === 'manage' && (
+            <ManageView
+              onOpenSnapshot={(snapshot) => setSelectedSnapshot(snapshot)}
             />
           )}
 

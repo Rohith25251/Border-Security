@@ -37,11 +37,45 @@ class TrackedObject:
     last_anpr_plate: Optional[str] = None
     last_anpr_time: float = 0.0
     last_face_time: float = 0.0
+    last_face_clarity: float = 0.0
+    matched_person_id: Optional[str] = None
+    matched_person_name: Optional[str] = None
+    carried_objects: List[str] = field(default_factory=list)  # e.g. ['knife', 'backpack']
+    harmful_object_alerted: bool = False
 
     @property
     def age(self) -> float:
         """Total duration this object has been actively tracked in seconds."""
         return self.last_seen - self.first_seen
+
+
+@dataclass
+class PersonRecord:
+    """
+    Person profile record.
+    Schema matches Supabase table: persons_of_interest
+    """
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = "Unidentified Subject"
+    dob: str = ""
+    description: str = ""
+    image_url: str = ""
+    face_image_url: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    face_crop: Optional[np.ndarray] = None  # In-memory face crop
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for Supabase insertion."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "dob": self.dob,
+            "description": self.description,
+            "image_url": self.image_url or self.face_image_url,
+            "face_image_url": self.face_image_url or self.image_url,
+            "timestamp": self.timestamp,
+        }
+
 
 
 @dataclass
@@ -54,7 +88,7 @@ class AlertEvent:
     camera_id: str = "camera1"
     camera_name: str = "Camera 1"
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    event_type: str = "intrusion"  # intrusion, anpr, loitering, fast_movement, group_clustering, face_detected, night_mode_change
+    event_type: str = "intrusion"  # intrusion, anpr, loitering, fast_movement, group_clustering, face_detected, harmful_object_detected, night_mode_change
     object_type: str = "human"    # human, vehicle, n/a
     license_plate: Optional[str] = None
     track_id: Optional[int] = None
@@ -80,4 +114,6 @@ class AlertEvent:
             "location": self.location,
             "image_path": self.image_path,
             "status": self.status,
+            "metadata": self.metadata
         }
+

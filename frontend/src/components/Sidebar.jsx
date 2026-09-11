@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Video, Tv, Bell, BarChart3, Globe, RefreshCw, Activity, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Shield, Video, Tv, Bell, BarChart3, Globe, Users, RefreshCw, Activity, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 export default function Sidebar({ activeTab, setActiveTab, unreviewedCount, isConnected, onRefresh }) {
   const [timeUtc, setTimeUtc] = useState('');
@@ -37,6 +37,12 @@ export default function Sidebar({ activeTab, setActiveTab, unreviewedCount, isCo
       description: 'Raw high-FPS feeds'
     },
     {
+      id: 'manage',
+      label: 'Manage',
+      icon: Users,
+      description: 'POI & Face Database'
+    },
+    {
       id: 'threats',
       label: 'Threat Feed',
       icon: Bell,
@@ -56,6 +62,7 @@ export default function Sidebar({ activeTab, setActiveTab, unreviewedCount, isCo
       description: 'Command & dispatch'
     }
   ];
+
 
   return (
     <aside className="sidebar">

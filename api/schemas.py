@@ -76,3 +76,31 @@ class WebhookConfigResponse(BaseModel):
     description: str
     created_at: str
     active: bool
+
+
+class PersonCreateRequest(BaseModel):
+    name: str = Field(..., description="Person full name")
+    dob: Optional[str] = Field("", description="Date of birth (e.g. YYYY-MM-DD)")
+    description: Optional[str] = Field("", description="Person description or notes")
+    image_url: Optional[str] = Field("", description="Photo URL or base64 data")
+    face_image_url: Optional[str] = Field(None, description="Fallback face image URL")
+
+
+class PersonUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    dob: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    face_image_url: Optional[str] = None
+
+
+class PersonResponse(BaseModel):
+    id: str
+    name: str
+    dob: Optional[str] = ""
+    description: Optional[str] = ""
+    image_url: Optional[str] = None
+    face_image_url: Optional[str] = None
+    timestamp: Optional[str] = ""
+
+
