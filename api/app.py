@@ -161,28 +161,19 @@ async def get_cameras():
 
 def generate_mjpeg_stream(camera_id: str, mode: str = "hud"):
     """
-    Generator for streaming live MJPEG frames.
+    Generator for streaming live MJPEG frames with instant transmission and zero lag.
     - mode="hud": real-time AI bounding box HUD (Live Detection pipeline)
-    - mode="raw": direct CCTV stream at exact native camera feed FPS without any artificial delay or capping
+    - mode="raw": direct CCTV stream at exact native camera feed FPS
     """
     worker = camera_manager.get_worker(camera_id)
     if not worker:
         return
 
-    last_ts = 0.0
+    encode_params = [cv2.IMWRITE_JPEG_QUALITY, 75]
 
     while worker.is_running:
         if mode == "raw":
-            reader = worker.reader
-            if reader and reader.is_connected and reader.latest_frame is not None:
-                current_ts = reader.frame_timestamp
-                if current_ts == last_ts:
-                    time.sleep(0.003)
-                    continue
-                last_ts = current_ts
-                frame = reader.latest_frame.copy()
-            else:
-                frame = worker.get_latest_raw_frame()
+            frame = worker.get_latest_raw_frame()
         else:
             frame = worker.get_latest_annotated_frame()
 
@@ -192,28 +183,25 @@ def generate_mjpeg_stream(camera_id: str, mode: str = "hud"):
             msg = f"Direct CCTV: Connecting to {camera_id}..." if mode == "raw" else f"Connecting to {camera_id}..."
             cv2.putText(frame, msg, (50, 240),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
-            success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            success, buffer = cv2.imencode('.jpg', frame, encode_params)
             if success:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            time.sleep(0.08)
+            time.sleep(0.05)
             continue
 
-        # Fast JPEG encoding (75% quality on raw stream for instantaneous transmission)
-        quality = 75 if mode == "raw" else 80
-        success, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        # Fast JPEG encoding for instantaneous transmission
+        success, buffer = cv2.imencode('.jpg', frame, encode_params)
         if not success:
-            time.sleep(0.003)
+            time.sleep(0.002)
             continue
 
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
         
-        if mode == "hud":
-            time.sleep(0.040)
-        else:
-            time.sleep(0.002)
+        # Ultra-low yield sleep (2ms) to prevent CPU thrashing while delivering maximum FPS
+        time.sleep(0.002)
 
 
 @app.get("/api/cameras/{camera_id}/stream", tags=["Cameras"])

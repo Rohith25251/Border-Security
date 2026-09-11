@@ -1,15 +1,25 @@
 """
 Pretrained YOLOv8 Object Detection Module.
 Detects humans (class 0) and vehicles (classes 2, 3, 5, 7) without model training.
+Optimized for ultra-low latency real-time surveillance inference.
 """
 
+import os
 import logging
 from typing import List, Tuple, Optional
 import numpy as np
+import torch
 from ultralytics import YOLO
 from core.models import Detection
 
 logger = logging.getLogger(__name__)
+
+# Optimize PyTorch CPU parallelism for maximum throughput
+try:
+    cpu_count = os.cpu_count() or 4
+    torch.set_num_threads(max(2, min(cpu_count, 8)))
+except Exception:
+    pass
 
 # COCO Class Mapping
 # 0: person
@@ -25,20 +35,33 @@ class ObjectDetector:
     Uses official pretrained COCO weights (yolov8n.pt or yolov8s.pt).
     """
 
-    def __init__(self, model_name: str = "yolov8n.pt", conf_threshold: float = 0.40, device: str = "cpu"):
+    def __init__(self, model_name: str = "yolov8n.pt", conf_threshold: float = 0.35, device: str = "auto"):
         self.model_name = model_name
         self.conf_threshold = conf_threshold
-        self.device = device
         
-        logger.info(f"Loading pretrained YOLOv8 detector '{model_name}' on device '{device}'...")
+        # Auto-detect optimal device
+        if device == "auto" or device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
+        
+        logger.info(f"Loading pretrained YOLOv8 detector '{model_name}' on device '{self.device}'...")
         self.model = YOLO(model_name)
-        logger.info("YOLOv8 detector loaded successfully.")
+        
+        # Warmup model with dummy frame for instant first-frame response
+        try:
+            dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+            self.model.predict(source=dummy, conf=self.conf_threshold, classes=TARGET_CLASSES, imgsz=480, verbose=False, device=self.device)
+            logger.info("YOLOv8 detector loaded and warmed up successfully.")
+        except Exception as e:
+            logger.warning(f"Detector warmup: {e}")
 
-    def detect(self, frame: np.ndarray, imgsz: int = 640) -> List[Detection]:
+    @torch.inference_mode()
+    def detect(self, frame: np.ndarray, imgsz: int = 480) -> List[Detection]:
         """
-        Run inference on the frame and extract human & vehicle detections.
+        Run low-latency inference on the frame and extract human & vehicle detections.
         """
-        if frame is None:
+        if frame is None or frame.size == 0:
             return []
 
         # Run YOLO inference
@@ -48,7 +71,8 @@ class ObjectDetector:
             classes=TARGET_CLASSES,
             imgsz=imgsz,
             verbose=False,
-            device=self.device
+            device=self.device,
+            half=True if self.device == "cuda" else False
         )
 
         detections: List[Detection] = []
@@ -83,3 +107,4 @@ class ObjectDetector:
             ))
 
         return detections
+

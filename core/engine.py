@@ -8,6 +8,7 @@ import cv2
 import time
 import logging
 from typing import List, Tuple, Optional, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from core.models import AlertEvent, TrackedObject, Detection
@@ -65,17 +66,57 @@ class FrameProcessingEngine:
         self.face_detector = FaceDetector() if enable_face_detection else None
         self.anpr_reader = ANPRReader(gpu=False) if enable_anpr else None
         self.behavior_analyzer = BehaviorAnalyzer()
+        self.ocr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"OCR-{camera_id}")
 
-        # Alert memory buffer
+        # Alert memory buffer & cached tracking state
         self.alerts_history: List[AlertEvent] = []
         self.frame_index: int = 0
+        self.active_tracks: List[TrackedObject] = []
+        self.detected_faces: List[Tuple[int, int, int, int]] = []
+        self.is_night: bool = False
+        self.on_alert_callback = None
+
+    def set_alert_callback(self, callback):
+        """Set callback function for asynchronously emitted alerts (e.g. from background ANPR)."""
+        self.on_alert_callback = callback
+
+    def _async_anpr_task(self, crop: np.ndarray, track_id: int, timestamp: float):
+        """Background OCR worker that extracts license plate without stalling the video feed."""
+        if self.anpr_reader is None or crop is None or crop.size == 0:
+            return
+        try:
+            # Fake box because we already passed the vehicle crop
+            h, w = crop.shape[:2]
+            plate_result = self.anpr_reader.extract_plate(crop, (0, 0, w, h))
+            if plate_result:
+                plate_text, ocr_conf = plate_result
+                # Update tracker state
+                if track_id in self.tracker.tracks:
+                    self.tracker.tracks[track_id].last_anpr_plate = plate_text
+                
+                alert = AlertEvent(
+                    camera_id=self.camera_id,
+                    camera_name=self.camera_name,
+                    event_type="anpr",
+                    object_type="vehicle",
+                    license_plate=plate_text,
+                    track_id=track_id,
+                    confidence=ocr_conf,
+                    location=self.location,
+                    frame_crop=crop.copy()
+                )
+                self.alerts_history.append(alert)
+                if self.on_alert_callback:
+                    self.on_alert_callback([alert], timestamp)
+        except Exception as e:
+            logger.error(f"Async ANPR error: {e}")
 
     def process_frame(self, frame: np.ndarray, timestamp: float = None) -> Tuple[np.ndarray, List[AlertEvent], Dict[str, Any]]:
         """
         Process a single video frame through all analytics stages.
         Returns: (annotated_frame, new_alerts, metrics)
         """
-        if frame is None:
+        if frame is None or frame.size == 0:
             return frame, [], {}
 
         if timestamp is None:
@@ -95,11 +136,14 @@ class FrameProcessingEngine:
             if night_alert:
                 new_alerts.append(night_alert)
 
-        # 2. Object Detection (Humans & Vehicles) on enhanced frame
-        detections = self.detector.detect(enhanced_frame)
+        self.is_night = is_night
+
+        # 2. Low-latency Object Detection (Humans & Vehicles) on enhanced frame
+        detections = self.detector.detect(enhanced_frame, imgsz=480)
 
         # 3. Multi-Object Tracking
         active_tracks = self.tracker.update(detections, current_time=timestamp)
+        self.active_tracks = active_tracks
 
         # 4. Face Detection (run selectively on human bounding boxes)
         detected_faces: List[Tuple[int, int, int, int]] = []
@@ -123,28 +167,20 @@ class FrameProcessingEngine:
                                 frame_crop=enhanced_frame[max(0, track.box[1]):track.box[3], max(0, track.box[0]):track.box[2]].copy()
                             ))
 
-        # 5. ANPR (Automatic Number Plate Recognition on Vehicles)
+        self.detected_faces = detected_faces
+
+        # 5. ANPR (Asynchronously offloaded to background ThreadPool to prevent video freezes)
         if self.enable_anpr and self.anpr_reader:
             for track in active_tracks:
                 if track.class_name == "vehicle" and track.last_anpr_plate is None:
-                    # Run ANPR on vehicle ROI if not yet recognized or periodically
-                    if timestamp - track.last_anpr_time >= 1.0:
+                    if timestamp - track.last_anpr_time >= 1.5:
                         track.last_anpr_time = timestamp
-                        plate_result = self.anpr_reader.extract_plate(enhanced_frame, track.box)
-                        if plate_result:
-                            plate_text, ocr_conf = plate_result
-                            track.last_anpr_plate = plate_text
-                            new_alerts.append(AlertEvent(
-                                camera_id=self.camera_id,
-                                camera_name=self.camera_name,
-                                event_type="anpr",
-                                object_type="vehicle",
-                                license_plate=plate_text,
-                                track_id=track.track_id,
-                                confidence=ocr_conf,
-                                location=self.location,
-                                frame_crop=enhanced_frame[max(0, track.box[1]):track.box[3], max(0, track.box[0]):track.box[2]].copy()
-                            ))
+                        x1, y1, x2, y2 = track.box
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(enhanced_frame.shape[1], x2), min(enhanced_frame.shape[0], y2)
+                        vehicle_crop = enhanced_frame[y1:y2, x1:x2].copy()
+                        if vehicle_crop.size > 0:
+                            self.ocr_executor.submit(self._async_anpr_task, vehicle_crop, track.track_id, timestamp)
 
         # 6. Virtual Fence Intrusion Checks
         for fence in self.fences:
@@ -186,6 +222,15 @@ class FrameProcessingEngine:
         }
 
         return annotated, new_alerts, metrics
+
+    def render_hud_on_frame(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Ultra-fast (<2ms) overlay renderer that draws current cached tracking state
+        onto any incoming camera frame without re-running heavy AI models.
+        """
+        if frame is None or frame.size == 0:
+            return frame
+        return self._render_overlays(frame, self.active_tracks, self.detected_faces, self.is_night)
 
     def _render_overlays(
         self,
@@ -255,3 +300,4 @@ class FrameProcessingEngine:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
 
         return out
+
