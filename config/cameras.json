@@ -1,0 +1,109 @@
+[
+  {
+    "id": "camera1",
+    "name": "Camera 1 - Border Daytime",
+    "rtsp_url": "https://10.131.111.151:8080/video",
+    "fallback_file": "videos/camera1_daytime.mp4",
+    "location": "North Perimeter Gate",
+    "frame_skip": 2,
+    "conf_threshold": 0.40,
+    "target_inference_size": [
+      640,
+      640
+    ],
+    "enable_face_detection": true,
+    "enable_anpr": false,
+    "enable_night_mode": true,
+    "fences": [
+      {
+        "id": "fence_c1",
+        "name": "North Perimeter Wire",
+        "type": "line",
+        "coordinates": [
+          [
+            300,
+            100
+          ],
+          [
+            300,
+            700
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "id": "camera2",
+    "name": "Camera 2 - Border Night Sector",
+    "rtsp_url": "rtsp://localhost:8554/camera2",
+    "fallback_file": "videos/camera2_night.mp4",
+    "location": "Eastern Low-Light Sector",
+    "frame_skip": 2,
+    "conf_threshold": 0.40,
+    "target_inference_size": [
+      640,
+      640
+    ],
+    "enable_face_detection": true,
+    "enable_anpr": true,
+    "enable_night_mode": true,
+    "fences": [
+      {
+        "id": "fence_c2",
+        "name": "Restricted Zone B",
+        "type": "polygon",
+        "coordinates": [
+          [
+            150,
+            150
+          ],
+          [
+            450,
+            150
+          ],
+          [
+            450,
+            450
+          ],
+          [
+            150,
+            450
+          ]
+        ]
+      }
+    ]
+  },
+  {
+    "id": "camera3",
+    "name": "Camera 3 - Highway Checkpoint",
+    "rtsp_url": "rtsp://localhost:8554/camera3",
+    "fallback_file": "videos/camera3_highway.mp4",
+    "location": "Sector C Highway",
+    "frame_skip": 2,
+    "conf_threshold": 0.40,
+    "target_inference_size": [
+      640,
+      640
+    ],
+    "enable_face_detection": false,
+    "enable_anpr": true,
+    "enable_night_mode": false,
+    "fences": [
+      {
+        "id": "fence_c3",
+        "name": "Roadway Barrier Line",
+        "type": "line",
+        "coordinates": [
+          [
+            100,
+            400
+          ],
+          [
+            800,
+            400
+          ]
+        ]
+      }
+    ]
+  }
+]
