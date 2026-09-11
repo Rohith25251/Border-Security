@@ -31,6 +31,8 @@ from api.schemas import (
     AlertResponse,
     AlertStatusUpdate,
     CameraStatusResponse,
+    CameraCreateRequest,
+    CameraUpdateRequest,
     StatsResponse,
     WebhookConfigRequest,
     WebhookConfigResponse,
@@ -162,6 +164,69 @@ async def health_check():
 async def get_cameras():
     """List all registered cameras with real-time telemetry metrics."""
     return camera_manager.get_all_statuses()
+
+
+@app.post("/api/cameras", tags=["Cameras"])
+async def add_camera(body: CameraCreateRequest = Body(...)):
+    """
+    Dynamically register a new IP / RTSP camera.
+    Automatically determines label and location from IP address if omitted,
+    persists into Supabase 'cameras' table, and immediately spins up the AI video worker.
+    """
+    camera_data = {
+        "ip_address": body.ip_address,
+        "rtsp_url": body.rtsp_url,
+        "name": body.name,
+        "location": body.location,
+        "conf_threshold": body.conf_threshold or 0.25,
+        "enable_face_detection": body.enable_face_detection if body.enable_face_detection is not None else True,
+        "enable_anpr": body.enable_anpr if body.enable_anpr is not None else True,
+        "enable_night_mode": body.enable_night_mode if body.enable_night_mode is not None else True,
+        "frame_skip": body.frame_skip or 2
+    }
+    configured = camera_manager.add_camera(camera_data)
+    return {"status": "success", "camera": configured}
+
+
+@app.put("/api/cameras/{camera_id}", tags=["Cameras"])
+async def update_camera(
+    camera_id: str = Path(..., description="Camera ID"),
+    body: CameraUpdateRequest = Body(...)
+):
+    """Update camera parameters, thresholds, or location in real time."""
+    updates = {}
+    if body.name is not None:
+        updates["name"] = body.name
+    if body.location is not None:
+        updates["location"] = body.location
+    if body.ip_address is not None:
+        updates["ip_address"] = body.ip_address
+    if body.rtsp_url is not None:
+        updates["rtsp_url"] = body.rtsp_url
+    if body.conf_threshold is not None:
+        updates["conf_threshold"] = body.conf_threshold
+    if body.enable_face_detection is not None:
+        updates["enable_face_detection"] = body.enable_face_detection
+    if body.enable_anpr is not None:
+        updates["enable_anpr"] = body.enable_anpr
+    if body.enable_night_mode is not None:
+        updates["enable_night_mode"] = body.enable_night_mode
+    if body.status is not None:
+        updates["status"] = body.status
+
+    updated = camera_manager.update_camera(camera_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
+    return {"status": "updated", "camera": updated}
+
+
+@app.delete("/api/cameras/{camera_id}", tags=["Cameras"])
+async def delete_camera(camera_id: str = Path(..., description="Camera ID")):
+    """Dynamically stop and delete a camera from database and active streams."""
+    success = camera_manager.remove_camera(camera_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
+    return {"status": "deleted", "camera_id": camera_id}
 
 
 def generate_mjpeg_stream(camera_id: str, mode: str = "hud"):

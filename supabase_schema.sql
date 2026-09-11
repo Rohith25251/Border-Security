@@ -228,10 +228,64 @@ BEGIN
             USING (bucket_id = 'person-records');
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'objects' AND policyname = 'Public Delete Access for person-records') THEN
-        CREATE POLICY "Public Delete Access for person-records"
-            ON storage.objects FOR DELETE
-            USING (bucket_id = 'person-records');
+-- ==============================================================================
+-- 10. Dedicated Cameras Table for IP & RTSP Camera Management
+-- ==============================================================================
+CREATE TABLE IF NOT EXISTS public.cameras (
+    id TEXT PRIMARY KEY,                       -- e.g. 'camera1', 'cam_192_168_1_50'
+    name TEXT NOT NULL,                        -- e.g. 'Camera 1 - Border Daytime'
+    ip_address TEXT DEFAULT '',                -- e.g. '192.168.1.50'
+    rtsp_url TEXT NOT NULL,                    -- e.g. 'http://192.168.1.50:8080/video' or 'rtsp://...'
+    fallback_file TEXT DEFAULT '',             -- e.g. 'videos/camera1_daytime.mp4'
+    location TEXT NOT NULL DEFAULT 'Sector A', -- e.g. 'North Perimeter Gate'
+    frame_skip INTEGER NOT NULL DEFAULT 2,
+    conf_threshold REAL NOT NULL DEFAULT 0.25,
+    enable_face_detection BOOLEAN NOT NULL DEFAULT true,
+    enable_anpr BOOLEAN NOT NULL DEFAULT true,
+    enable_night_mode BOOLEAN NOT NULL DEFAULT true,
+    fences JSONB DEFAULT '[]'::jsonb,
+    status TEXT NOT NULL DEFAULT 'active',     -- 'active', 'offline', 'disabled'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Performance indices for cameras table
+CREATE INDEX IF NOT EXISTS idx_cameras_status ON public.cameras (status);
+CREATE INDEX IF NOT EXISTS idx_cameras_location ON public.cameras (location);
+
+-- Enable Supabase Realtime for instant camera additions & telemetry
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables 
+        WHERE pubname = 'supabase_realtime' 
+          AND schemaname = 'public' 
+          AND tablename = 'cameras'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.cameras;
     END IF;
 END $$;
+
+-- Row Level Security (RLS) for `cameras`
+ALTER TABLE public.cameras ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'cameras' AND policyname = 'Allow public read access to cameras') THEN
+        CREATE POLICY "Allow public read access to cameras" ON public.cameras FOR SELECT USING (true);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'cameras' AND policyname = 'Allow public insert to cameras') THEN
+        CREATE POLICY "Allow public insert to cameras" ON public.cameras FOR INSERT WITH CHECK (true);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'cameras' AND policyname = 'Allow public update to cameras') THEN
+        CREATE POLICY "Allow public update to cameras" ON public.cameras FOR UPDATE USING (true) WITH CHECK (true);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'cameras' AND policyname = 'Allow public delete to cameras') THEN
+        CREATE POLICY "Allow public delete to cameras" ON public.cameras FOR DELETE USING (true);
+    END IF;
+END $$;
+
 

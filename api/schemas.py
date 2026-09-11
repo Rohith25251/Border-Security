@@ -36,6 +36,8 @@ class CameraStatusResponse(BaseModel):
     camera_id: str
     camera_name: str
     location: str
+    ip_address: Optional[str] = ""
+    rtsp_url: Optional[str] = ""
     is_running: bool
     is_connected: bool
     fps: float
@@ -46,6 +48,34 @@ class CameraStatusResponse(BaseModel):
     active_tracks: int
     is_night: bool
     scene_brightness: float
+    enable_face_detection: Optional[bool] = True
+    enable_anpr: Optional[bool] = True
+    enable_night_mode: Optional[bool] = True
+    conf_threshold: Optional[float] = 0.25
+
+
+class CameraCreateRequest(BaseModel):
+    ip_address: Optional[str] = Field(None, description="IP address or host (e.g. 192.168.1.50 or 192.168.1.50:8080)")
+    rtsp_url: Optional[str] = Field(None, description="Direct RTSP or HTTP stream URL")
+    name: Optional[str] = Field(None, description="Label / name for the camera (auto-generated if omitted)")
+    location: Optional[str] = Field(None, description="Deployment location (auto-generated if omitted)")
+    conf_threshold: Optional[float] = Field(0.25, description="YOLO detection confidence threshold")
+    enable_face_detection: Optional[bool] = Field(True, description="Enable face detection & database matching")
+    enable_anpr: Optional[bool] = Field(True, description="Enable vehicle number plate recognition")
+    enable_night_mode: Optional[bool] = Field(True, description="Enable low-light enhancement")
+    frame_skip: Optional[int] = Field(2, description="Frame skip count")
+
+
+class CameraUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    location: Optional[str] = None
+    ip_address: Optional[str] = None
+    rtsp_url: Optional[str] = None
+    conf_threshold: Optional[float] = None
+    enable_face_detection: Optional[bool] = None
+    enable_anpr: Optional[bool] = None
+    enable_night_mode: Optional[bool] = None
+    status: Optional[str] = None
 
 
 class StatsResponse(BaseModel):

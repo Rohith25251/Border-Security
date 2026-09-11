@@ -551,3 +551,51 @@ class SupabaseManager:
             "is_supabase_connected": self.is_connected
         }
 
+    # ==============================================================================
+    # Camera Management Operations
+    # ==============================================================================
+    def fetch_cameras(self) -> List[Dict[str, Any]]:
+        """Retrieve list of registered cameras from Supabase or local config fallback."""
+        if self.is_connected and self.client is not None:
+            try:
+                res = self.client.table("cameras").select("*").order("created_at", desc=False).execute()
+                if res.data is not None:
+                    return res.data
+            except Exception as e:
+                logger.error(f"Error fetching cameras from Supabase: {e}")
+        return []
+
+    def insert_camera(self, camera_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert or upsert a new camera record into Supabase."""
+        if self.is_connected and self.client is not None:
+            try:
+                res = self.client.table("cameras").upsert(camera_data).execute()
+                if res.data and len(res.data) > 0:
+                    return res.data[0]
+            except Exception as e:
+                logger.error(f"Error inserting camera into Supabase: {e}")
+        return camera_data
+
+    def update_camera(self, camera_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update an existing camera configuration."""
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if self.is_connected and self.client is not None:
+            try:
+                res = self.client.table("cameras").update(updates).eq("id", camera_id).execute()
+                if res.data and len(res.data) > 0:
+                    return res.data[0]
+            except Exception as e:
+                logger.error(f"Error updating camera in Supabase: {e}")
+        return updates
+
+    def delete_camera(self, camera_id: str) -> bool:
+        """Delete a camera record from Supabase."""
+        if self.is_connected and self.client is not None:
+            try:
+                self.client.table("cameras").delete().eq("id", camera_id).execute()
+                return True
+            except Exception as e:
+                logger.error(f"Error deleting camera from Supabase: {e}")
+                return False
+        return True
+

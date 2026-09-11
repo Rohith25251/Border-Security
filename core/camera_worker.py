@@ -271,6 +271,8 @@ class CameraWorkerThread:
                 "camera_id": self.camera_id,
                 "camera_name": self.camera_name,
                 "location": self.location,
+                "ip_address": self.config.get("ip_address", ""),
+                "rtsp_url": self.rtsp_url,
                 "is_running": self.is_running,
                 "is_connected": self.is_connected,
                 "fps": self.fps,
@@ -281,7 +283,11 @@ class CameraWorkerThread:
                 "total_alerts": self.total_alerts_generated,
                 "active_tracks": len(self.engine.active_tracks),
                 "is_night": self.engine.is_night,
-                "scene_brightness": round(self.engine.night_enhancer.last_brightness, 1)
+                "scene_brightness": round(self.engine.night_enhancer.last_brightness, 1),
+                "enable_face_detection": self.config.get("enable_face_detection", True),
+                "enable_anpr": self.config.get("enable_anpr", True),
+                "enable_night_mode": self.config.get("enable_night_mode", True),
+                "conf_threshold": self.conf_threshold
             }
 
     def stop(self):

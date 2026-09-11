@@ -172,6 +172,7 @@ export default function App() {
             <CameraGrid
               cameras={cameras}
               onSelectSnapshot={(snapshot) => setSelectedSnapshot(snapshot)}
+              onRefreshCameras={fetchCameras}
             />
           )}
 

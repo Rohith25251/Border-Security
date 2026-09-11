@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { Camera, Moon, Sun, Users, Activity, Eye, Maximize2, Radio, AlertTriangle } from 'lucide-react';
+import { Camera, Moon, Sun, Users, Activity, Eye, Radio, AlertTriangle, Plus, Trash2, Globe, MapPin } from 'lucide-react';
+import AddCameraModal from './AddCameraModal';
 
-export default function CameraGrid({ cameras, onSelectSnapshot }) {
+export default function CameraGrid({ cameras, onSelectSnapshot, onRefreshCameras }) {
   const [selectedFilter, setSelectedFilter] = useState('all');
   const [streamKeys, setStreamKeys] = useState({});
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   const reloadStream = (cameraId) => {
     setStreamKeys((prev) => ({
@@ -12,9 +15,28 @@ export default function CameraGrid({ cameras, onSelectSnapshot }) {
     }));
   };
 
+  const handleDeleteCamera = async (camId, camName) => {
+    if (!window.confirm(`Are you sure you want to remove camera channel '${camName || camId}'?`)) {
+      return;
+    }
+    setDeletingId(camId);
+    try {
+      const res = await fetch(`/api/cameras/${camId}`, { method: 'DELETE' });
+      if (res.ok) {
+        if (onRefreshCameras) onRefreshCameras();
+      } else {
+        alert(`Failed to delete camera ${camId}`);
+      }
+    } catch (err) {
+      alert(`Error deleting camera: ${err.message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const filteredCameras = selectedFilter === 'all'
     ? cameras
-    : cameras.filter((c) => c.camera_id === selectedFilter);
+    : cameras.filter((c) => (c.camera_id || c.id) === selectedFilter);
 
   return (
     <div className="camera-grid-section">
@@ -29,36 +51,61 @@ export default function CameraGrid({ cameras, onSelectSnapshot }) {
           </p>
         </div>
 
-        <div className="section-actions">
+        <div className="section-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            className="button button-primary"
+            onClick={() => setShowAddModal(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              fontSize: '0.85rem',
+              background: '#2563eb',
+              color: '#ffffff',
+              borderRadius: '8px',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: 600
+            }}
+          >
+            <Plus size={16} /> Add IP Camera
+          </button>
+
           <select
             className="filter-select"
             value={selectedFilter}
             onChange={(e) => setSelectedFilter(e.target.value)}
           >
             <option value="all">All Channels ({cameras.length} Feeds)</option>
-            {cameras.map((cam) => (
-              <option key={cam.camera_id} value={cam.camera_id}>
-                {cam.name || cam.camera_id}
-              </option>
-            ))}
+            {cameras.map((cam) => {
+              const cid = cam.camera_id || cam.id;
+              return (
+                <option key={cid} value={cid}>
+                  {cam.camera_name || cam.name || cid}
+                </option>
+              );
+            })}
           </select>
         </div>
       </div>
 
       <div className="camera-grid">
         {filteredCameras.map((cam) => {
-          const streamUrl = `/api/cameras/${cam.camera_id}/stream${streamKeys[cam.camera_id] ? `?t=${streamKeys[cam.camera_id]}` : ''}`;
+          const cid = cam.camera_id || cam.id;
+          const streamUrl = `/api/cameras/${cid}/stream${streamKeys[cid] ? `?t=${streamKeys[cid]}` : ''}`;
           const isNight = cam.night_mode_active || cam.is_night;
           const isOffline = cam.is_connected === false;
+          const camDisplayName = cam.camera_name || cam.name || cid;
 
           return (
-            <div key={cam.camera_id} className="camera-card">
+            <div key={cid} className="camera-card">
               {/* Header */}
               <div className="camera-card-header">
                 <div className="camera-name-box">
                   <Camera size={16} color="#2563eb" />
-                  <span className="camera-name">{cam.name || cam.camera_id}</span>
-                  <span className="camera-id-badge">{cam.camera_id}</span>
+                  <span className="camera-name">{camDisplayName}</span>
+                  <span className="camera-id-badge">{cid}</span>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -75,6 +122,27 @@ export default function CameraGrid({ cameras, onSelectSnapshot }) {
                       <Sun size={11} /> Day Mode
                     </span>
                   )}
+
+                  {/* Delete button */}
+                  <button
+                    onClick={() => handleDeleteCamera(cid, camDisplayName)}
+                    disabled={deletingId === cid}
+                    title="Remove Camera Channel"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#94a3b8',
+                      cursor: 'pointer',
+                      padding: '4px',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      alignItems: 'center'
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = '#ef4444')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
 
@@ -82,7 +150,7 @@ export default function CameraGrid({ cameras, onSelectSnapshot }) {
               <div className="camera-video-container">
                 <img
                   src={streamUrl}
-                  alt={`Live Stream - ${cam.camera_id}`}
+                  alt={`Live Stream - ${cid}`}
                   className="camera-video-feed"
                   onError={(e) => {
                     e.target.style.display = 'none';
@@ -96,11 +164,11 @@ export default function CameraGrid({ cameras, onSelectSnapshot }) {
 
                 <div className="camera-video-placeholder" style={{ display: 'none' }}>
                   <Activity size={32} />
-                  <span>CCTV Offline: Connecting to {cam.name || cam.camera_id}...</span>
+                  <span>Connecting to {camDisplayName}...</span>
                   <button
                     className="btn btn-secondary btn-sm"
                     style={{ marginTop: '8px' }}
-                    onClick={() => reloadStream(cam.camera_id)}
+                    onClick={() => reloadStream(cid)}
                   >
                     Retry Connection
                   </button>
@@ -125,24 +193,26 @@ export default function CameraGrid({ cameras, onSelectSnapshot }) {
               {/* Telemetry Footer */}
               <div className="camera-card-footer">
                 <div className="telemetry-item">
-                  <span style={{ color: '#64748b' }}>Latency:</span>
-                  <span className="telemetry-val">{Math.round(cam.inference_latency_ms || 0)} ms</span>
+                  <MapPin size={12} color="#64748b" />
+                  <span className="telemetry-val" style={{ fontSize: '0.78rem', color: '#475569' }}>
+                    {cam.location || 'Border Sector'}
+                  </span>
                 </div>
 
                 <div className="telemetry-item">
-                  <span style={{ color: '#64748b' }}>Brightness:</span>
-                  <span className="telemetry-val">{(cam.current_brightness || 0).toFixed(1)} Lux</span>
+                  <span style={{ color: '#64748b' }}>Latency:</span>
+                  <span className="telemetry-val">{Math.round(cam.inference_time_ms || cam.inference_latency_ms || 0)} ms</span>
                 </div>
 
                 <div style={{ display: 'flex', gap: '4px' }}>
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => onSelectSnapshot && onSelectSnapshot({
-                      image_url: `/api/cameras/${cam.camera_id}/snapshot?t=${Date.now()}`,
+                      image_url: `/api/cameras/${cid}/snapshot?t=${Date.now()}`,
                       event_type: 'live_snapshot',
-                      camera_id: cam.camera_id,
+                      camera_id: cid,
                       timestamp: new Date().toISOString(),
-                      details: `Manual snapshot capture for ${cam.name || cam.camera_id}`
+                      details: `Manual snapshot capture for ${camDisplayName}`
                     })}
                     title="Capture Instant Frame Snapshot"
                   >
@@ -154,6 +224,15 @@ export default function CameraGrid({ cameras, onSelectSnapshot }) {
           );
         })}
       </div>
+
+      {/* Add Camera Modal */}
+      <AddCameraModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onCameraAdded={() => {
+          if (onRefreshCameras) onRefreshCameras();
+        }}
+      />
     </div>
   );
 }
