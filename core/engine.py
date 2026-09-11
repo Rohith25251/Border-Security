@@ -119,9 +119,10 @@ class FrameProcessingEngine:
             plate_result = self.anpr_reader.extract_plate(crop, (0, 0, w, h))
             if plate_result:
                 plate_text, ocr_conf = plate_result
+                logger.info(f"[{self.camera_id}] ANPR Plate Detected: {plate_text} (Conf: {ocr_conf*100:.1f}%) on Track #{track_id}")
                 if track_id in self.tracker.tracks:
                     self.tracker.tracks[track_id].last_anpr_plate = plate_text
-                
+
                 alert = AlertEvent(
                     camera_id=self.camera_id,
                     camera_name=self.camera_name,
@@ -129,8 +130,15 @@ class FrameProcessingEngine:
                     object_type="vehicle",
                     license_plate=plate_text,
                     track_id=track_id,
-                    confidence=ocr_conf,
+                    confidence=round(ocr_conf, 2),
                     location=self.location,
+                    details=f"Vehicle Plate Recognized: {plate_text}",
+                    metadata={
+                        "license_plate": plate_text,
+                        "confidence": round(ocr_conf * 100, 1),
+                        "plate_number": plate_text,
+                        "vehicle_type": "Vehicle"
+                    },
                     frame_crop=crop.copy()
                 )
                 self.alerts_history.append(alert)
@@ -249,17 +257,22 @@ class FrameProcessingEngine:
                     continue
 
                 track.face_recog_frame = self.frame_index
-                roi_faces = self.face_detector.detect_in_roi(enhanced_frame, track.box)
+                faces_info = self.face_detector.detect_faces_with_landmarks(enhanced_frame, roi=track.box)
 
-                if roi_faces:
-                    track.cached_face_box = roi_faces[0]
-                    for fx1, fy1, fx2, fy2 in roi_faces:
+                if faces_info:
+                    track.cached_face_box = faces_info[0]["box"]
+                    for f_info in faces_info:
+                        fx1, fy1, fx2, fy2 = f_info["box"]
+                        raw_face = f_info.get("raw_face")
                         detected_faces.append((fx1, fy1, fx2, fy2))
+
                         face_crop = enhanced_frame[max(0, fy1):min(frame_h, fy2), max(0, fx1):min(frame_w, fx2)]
                         if face_crop.size == 0:
                             continue
 
                         matched_id, matched_name, sim, is_clear, sharpness = self.face_recognizer.match_face(
+                            frame=enhanced_frame,
+                            raw_face=raw_face,
                             face_crop=face_crop,
                             camera_id=self.camera_id,
                             camera_name=self.camera_name,
@@ -320,9 +333,9 @@ class FrameProcessingEngine:
                                     frame_crop=crop
                                 ))
                         else:
-                            # Count consecutive misses; clear match after 15 missed recog frames
+                            # Promptly clear match after 3 consecutive unmatched frames
                             track.face_recog_consecutive_miss += 1
-                            if track.face_recog_consecutive_miss > 15 and track.matched_person_name:
+                            if track.face_recog_consecutive_miss > 3 and track.matched_person_name:
                                 track.matched_person_name = None
                                 track.matched_person_id = None
                                 track.face_recog_consecutive_miss = 0
@@ -452,10 +465,7 @@ class FrameProcessingEngine:
                 status_title = f"MATCHED: {track.matched_person_name}"
             elif track.class_name == "human":
                 color = COLOR_HUMAN
-                if track.last_face_clarity >= 35.0:
-                    status_title = "PERSON [FACE CLEAR]"
-                else:
-                    status_title = "PERSON"
+                status_title = "PERSON"
             else:
                 color = COLOR_VEHICLE
                 if track.last_anpr_plate:

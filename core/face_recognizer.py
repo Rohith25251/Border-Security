@@ -2,6 +2,7 @@
 Face Recognition & Clarity Assessment Module for IBVAP.
 Uses OpenCV SFace Deep Neural Network (128-D Invariant Embeddings) and YuNet Landmark Alignment
 to provide high-precision, low-latency facial identification against enrolled database profiles.
+Configured with strict cosine thresholding (0.45) to eliminate false positive identity predictions.
 """
 
 import os
@@ -34,7 +35,7 @@ class FaceRecognizer:
         self,
         min_size: int = 25,
         min_sharpness: float = 12.0,
-        similarity_threshold: float = 0.35
+        similarity_threshold: float = 0.45
     ):
         self.min_size = min_size
         self.min_sharpness = min_sharpness
@@ -102,36 +103,41 @@ class FaceRecognizer:
         is_clear = sharpness >= self.min_sharpness
         return is_clear, round(sharpness, 2)
 
-    def extract_feature_vector(self, face_crop: np.ndarray) -> Optional[np.ndarray]:
+    def extract_feature_vector(
+        self,
+        image: np.ndarray,
+        raw_face: Optional[np.ndarray] = None
+    ) -> Optional[np.ndarray]:
         """
-        Extract 128-D deep neural network embedding from face crop,
-        leveraging YuNet 5-point landmark alignment for rotation & pose invariance.
+        Extract 128-D deep neural network embedding.
+        If raw_face with 5 landmarks is provided, aligns precisely using sface.alignCrop.
         """
-        if face_crop is None or face_crop.size == 0:
+        if image is None or image.size == 0:
             return None
-
-        h, w = face_crop.shape[:2]
 
         if self.sface is not None:
             try:
-                # Attempt landmark alignment via YuNet
-                raw_faces = self.face_detector.detect_raw(face_crop)
-                if raw_faces is not None and len(raw_faces) > 0:
-                    aligned = self.sface.alignCrop(face_crop, raw_faces[0])
-                    feat = self.sface.feature(aligned)
-                    return feat
+                if raw_face is not None:
+                    aligned = self.sface.alignCrop(image, raw_face)
+                    return self.sface.feature(aligned)
 
-                # Fallback resize if landmarks not detected inside tight crop
-                resized = cv2.resize(face_crop, (112, 112))
+                # If landmarks not provided, detect raw landmarks in crop
+                h, w = image.shape[:2]
+                detected = self.face_detector.detect_faces_with_landmarks(image)
+                if detected and detected[0].get("raw_face") is not None:
+                    aligned = self.sface.alignCrop(image, detected[0]["raw_face"])
+                    return self.sface.feature(aligned)
+
+                # Fallback resize
+                resized = cv2.resize(image, (112, 112))
                 if len(resized.shape) == 2:
                     resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
-                feat = self.sface.feature(resized)
-                return feat
+                return self.sface.feature(resized)
             except Exception as e:
                 logger.debug(f"SFace feature extraction error: {e}")
 
         # Fallback structural feature vector
-        resized = cv2.resize(face_crop, (112, 112))
+        resized = cv2.resize(image, (112, 112))
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY) if len(resized.shape) == 3 else resized
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         norm_gray = clahe.apply(gray)
@@ -147,7 +153,7 @@ class FaceRecognizer:
         """
         Pre-process raw uploaded image on database entry:
         1. Decodes image (base64, URL, path, or ndarray).
-        2. Detects and isolates primary face bounding box.
+        2. Detects and isolates primary face with landmark alignment.
         3. Computes normalized 128-D deep feature signature.
         Returns: (face_crop, feature_signature)
         """
@@ -180,20 +186,20 @@ class FaceRecognizer:
             return None, None
 
         # Detect face inside the image
-        faces = self.face_detector.detect(img)
-        if faces and len(faces) > 0:
-            largest_face = max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
-            fx1, fy1, fx2, fy2 = largest_face
+        faces_info = self.face_detector.detect_faces_with_landmarks(img)
+        if faces_info and len(faces_info) > 0:
+            primary_face = max(faces_info, key=lambda f: (f["box"][2] - f["box"][0]) * (f["box"][3] - f["box"][1]))
+            fx1, fy1, fx2, fy2 = primary_face["box"]
             h, w = img.shape[:2]
             pw, ph = int((fx2 - fx1) * 0.15), int((fy2 - fy1) * 0.15)
             cx1, cy1 = max(0, fx1 - pw), max(0, fy1 - ph)
             cx2, cy2 = min(w, fx2 + pw), min(h, fy2 + ph)
             face_crop = img[cy1:cy2, cx1:cx2].copy()
+            signature = self.extract_feature_vector(img, raw_face=primary_face["raw_face"])
         else:
             face_crop = img.copy()
+            signature = self.extract_feature_vector(face_crop)
 
-        # Compute deep signature
-        signature = self.extract_feature_vector(face_crop)
         return face_crop, signature
 
     def register_profile_signature(
@@ -229,7 +235,7 @@ class FaceRecognizer:
     def sync_database_profiles(self, supabase_mgr):
         """
         Synchronize registered persons from Supabase / local storage into memory.
-        Only runs every 8s to prevent overhead. Thread-safe — safe to call from background threads.
+        Thread-safe — safe to call from background threads.
         """
         if supabase_mgr is None:
             return
@@ -257,7 +263,7 @@ class FaceRecognizer:
                 p_dob = p.get("dob") or ""
                 p_desc = p.get("description") or p.get("notes") or ""
 
-                # If already indexed with valid signature, just update flat metadata
+                # If already indexed with valid signature, refresh flat metadata
                 if pid in self.known_profiles and self.known_profiles[pid].get("signature") is not None:
                     self.known_profiles[pid]["name"] = name
                     self.known_profiles[pid]["image_url"] = p_img
@@ -297,20 +303,24 @@ class FaceRecognizer:
 
     def match_face(
         self,
-        face_crop: np.ndarray,
+        frame: np.ndarray,
+        raw_face: Optional[np.ndarray] = None,
+        face_crop: Optional[np.ndarray] = None,
         camera_id: str = "camera1",
         camera_name: str = "Camera 1",
         carried_objects: List[str] = None
     ) -> Tuple[Optional[str], Optional[str], float, bool, float]:
         """
-        Matches a detected face crop against all enrolled database profiles.
+        Matches detected face against all enrolled database profiles using landmark-aligned SFace embeddings.
         Returns: (matched_person_id, matched_person_name, similarity, is_clear, sharpness)
         """
-        is_clear, sharpness = self.evaluate_clarity(face_crop)
+        eval_img = face_crop if face_crop is not None else frame
+        is_clear, sharpness = self.evaluate_clarity(eval_img)
+
         if len(self.known_profiles) == 0:
             return None, None, 0.0, is_clear, sharpness
 
-        live_feature = self.extract_feature_vector(face_crop)
+        live_feature = self.extract_feature_vector(frame, raw_face=raw_face)
         if live_feature is None:
             return None, None, 0.0, is_clear, sharpness
 
@@ -340,6 +350,7 @@ class FaceRecognizer:
                 best_match_id = pid
                 best_match_name = data.get("name", "Subject")
 
+        # Strict threshold check: SFace Cosine threshold >= 0.45 to prevent false matches
         if best_match_id and best_sim >= self.similarity_threshold:
             return best_match_id, best_match_name, best_sim, True, sharpness
 

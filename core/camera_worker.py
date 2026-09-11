@@ -44,7 +44,7 @@ class CameraWorkerThread:
         self.fallback_file = config.get("fallback_file", "")
         self.location = config.get("location", "Border Sector")
         self.frame_skip = max(1, int(config.get("frame_skip", 2)))
-        self.conf_threshold = float(config.get("conf_threshold", 0.35))
+        self.conf_threshold = float(config.get("conf_threshold", 0.25))
         self.target_size = tuple(config.get("target_inference_size", [640, 640]))
         self.alert_queue = alert_queue
         self.supabase_manager = supabase_manager or getattr(alert_queue, "supabase", None) or SupabaseManager()
