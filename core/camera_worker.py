@@ -224,16 +224,8 @@ class CameraWorkerThread:
             if frame is None or not self.is_connected:
                 continue
 
-            # Pre-resize large frames for high-speed AI processing
-            h, w = frame.shape[:2]
-            if w > 1280:
-                scale = 1280.0 / w
-                proc_frame = cv2.resize(frame, (1280, int(h * scale)))
-            else:
-                proc_frame = frame
-
             try:
-                annotated_frame, new_alerts, metrics = self.engine.process_frame(proc_frame, timestamp=timestamp)
+                annotated_frame, new_alerts, metrics = self.engine.process_frame(frame, timestamp=timestamp)
                 self.processed_counter += 1
                 ai_frames += 1
 

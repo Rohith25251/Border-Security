@@ -1,6 +1,6 @@
 """
 Night Mode & Low-Light Enhancement Module.
-Measures mean frame luminance, automatically triggers CLAHE enhancement,
+Measures true frame luminance, automatically triggers CLAHE enhancement,
 and notifies the engine of night mode transitions.
 """
 
@@ -16,7 +16,7 @@ class NightEnhancer:
     Uses Contrast Limited Adaptive Histogram Equalization (CLAHE) on LAB color space.
     """
 
-    def __init__(self, brightness_threshold: float = 65.0, clip_limit: float = 2.5, tile_grid_size: Tuple[int, int] = (8, 8)):
+    def __init__(self, brightness_threshold: float = 45.0, clip_limit: float = 2.0, tile_grid_size: Tuple[int, int] = (8, 8)):
         self.brightness_threshold = brightness_threshold
         self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
         self.is_night_mode: bool = False
@@ -33,11 +33,10 @@ class NightEnhancer:
 
         self._check_counter += 1
         
-        # Fast luminance calculation using fast downsampling step
-        # Only recalculate average luminance every 5 frames to maximize FPS
+        # Calculate true grayscale luminance
         if self._check_counter % 5 == 1:
-            sample = frame[::16, ::16]
-            mean_brightness = float(cv2.mean(sample)[0])
+            gray_sample = cv2.cvtColor(frame[::16, ::16], cv2.COLOR_BGR2GRAY)
+            mean_brightness = float(cv2.mean(gray_sample)[0])
             self.last_brightness = mean_brightness
             new_night_state = mean_brightness < self.brightness_threshold
         else:
@@ -74,4 +73,3 @@ class NightEnhancer:
             return enhanced_bgr, True, state_change_alert
 
         return frame, False, state_change_alert
-

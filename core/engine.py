@@ -1,7 +1,7 @@
 """
 Master IBVAP Analytics Engine.
-Integrates Object Detection, Tracking, Face Detection, Facial Recognition against Database,
-Harmful Weapon Telemetry, ANPR, Virtual Fence, Night Mode CLAHE, and Behavior Analytics into a unified frame processing pipeline.
+Integrates Object Detection, Tracking, Face Recognition against Database,
+Harmful Weapon Detection, ANPR License Plate Reading, and Behavior Analytics into a unified frame processing pipeline.
 """
 
 import os
@@ -25,15 +25,13 @@ from core.behavior_analytics import BehaviorAnalyzer
 logger = logging.getLogger(__name__)
 
 # Visual theme colors (BGR)
-COLOR_HUMAN = (0, 215, 255)         # Gold / Amber
-COLOR_MATCHED = (0, 255, 128)       # Bright Emerald Green for Matched DB Person
-COLOR_VEHICLE = (255, 144, 30)      # Blue
-COLOR_FENCE = (0, 0, 255)           # Red
-COLOR_FACE_CLEAR = (255, 0, 255)    # Magenta
-COLOR_FACE_UNCLEAR = (128, 128, 128)# Dim Gray
-COLOR_NIGHT = (0, 255, 255)         # Yellow
-COLOR_HARMFUL = (0, 0, 255)         # Bright Red for weapons
-COLOR_LUGGAGE = (255, 191, 0)       # Deep Sky Blue
+COLOR_HUMAN = (0, 215, 255)         # Gold / Amber for general person
+COLOR_MATCHED = (0, 255, 128)       # Bright Emerald Green for Matched Watchlist Subject
+COLOR_VEHICLE = (255, 144, 30)      # Sky Blue for Vehicles
+COLOR_FENCE = (0, 0, 255)           # Red for Virtual Fence
+COLOR_FACE = (255, 0, 255)          # Magenta for Face ROI
+COLOR_NIGHT = (0, 255, 255)         # Yellow for Night Mode
+COLOR_HARMFUL = (0, 0, 255)         # Bright Red for Armed Weapons
 COLOR_TEXT = (255, 255, 255)        # White
 
 
@@ -41,7 +39,7 @@ class FrameProcessingEngine:
     """
     Unified AI Analytics Engine per camera stream.
     Processes incoming frames, detects and tracks objects, triggers behavioral & security rules,
-    performs facial recognition against database persons, and returns annotated frames.
+    performs facial recognition against database persons, and extracts number plates from vehicles.
     """
 
     def __init__(
@@ -80,6 +78,8 @@ class FrameProcessingEngine:
         # Alert memory buffer & cached tracking state
         self.alerts_history: List[AlertEvent] = []
         self.persons_history: List[PersonRecord] = []
+        self.matched_alerts_sent: set = set()
+        self.armed_alerts_sent: set = set()
         self.frame_index: int = 0
         self.active_tracks: List[TrackedObject] = []
         self.detected_faces: List[Tuple[int, int, int, int]] = []
@@ -152,7 +152,7 @@ class FrameProcessingEngine:
         if self.face_recognizer and self.supabase_manager:
             self.face_recognizer.sync_database_profiles(self.supabase_manager)
 
-        # 1. Night Mode Assessment & CLAHE Enhancement
+        # 1. Night Mode Assessment & Enhancement
         enhanced_frame = frame
         is_night = False
         if self.enable_night_mode:
@@ -164,64 +164,31 @@ class FrameProcessingEngine:
 
         self.is_night = is_night
 
-        # 2. Low-latency Object & Weapon/Luggage Detection
-        raw_detections = self.detector.detect(enhanced_frame, imgsz=480)
+        # 2. YOLO Detection (Humans, Vehicles, Weapons)
+        raw_detections = self.detector.detect(enhanced_frame, imgsz=640)
         self.detected_objects_raw = raw_detections
 
-        # Split into primary trackable targets vs. carried/nearby objects
+        # Split into primary trackable targets vs. weapon/luggage items
         track_detections: List[Detection] = []
         carried_candidates: List[Detection] = []
 
         for d in raw_detections:
-            if d.class_name in ["human", "car", "truck", "bus", "motorcycle", "vehicle"]:
-                track_detections.append(d)
+            if d.class_name in ["human", "person"]:
+                track_detections.append(Detection(box=d.box, confidence=d.confidence, class_id=0, class_name="human"))
+            elif d.class_name in ["car", "truck", "bus", "motorcycle", "vehicle"]:
+                track_detections.append(Detection(box=d.box, confidence=d.confidence, class_id=d.class_id, class_name="vehicle"))
             else:
                 carried_candidates.append(d)
 
-        # 3. Robust Face & Close-up Person Detection
-        detected_faces: List[Tuple[int, int, int, int]] = []
-        if self.enable_face_detection and self.face_detector:
-            # Run fast face detector across the frame
-            full_frame_faces = self.face_detector.detect(enhanced_frame)
-            if full_frame_faces:
-                detected_faces.extend(full_frame_faces)
-
-                # Ensure every detected face has a corresponding human tracking box
-                for fx1, fy1, fx2, fy2 in full_frame_faces:
-                    fw, fh = fx2 - fx1, fy2 - fy1
-                    fcx, fcy = (fx1 + fx2) // 2, (fy1 + fy2) // 2
-
-                    # Check if any existing human detection already covers this face
-                    has_covering_human = False
-                    for hd in track_detections:
-                        if hd.class_name == "human":
-                            hx1, hy1, hx2, hy2 = hd.box
-                            if hx1 <= fcx <= hx2 and hy1 <= fcy <= hy2:
-                                has_covering_human = True
-                                break
-
-                    # If no YOLO human box covers this face, construct upper-body person box
-                    if not has_covering_human:
-                        px1 = max(0, fx1 - int(fw * 0.75))
-                        py1 = max(0, fy1 - int(fh * 0.25))
-                        px2 = min(frame_w, fx2 + int(fw * 0.75))
-                        py2 = min(frame_h, fy2 + int(fh * 3.5))
-                        track_detections.append(Detection(
-                            box=(px1, py1, px2, py2),
-                            confidence=0.88,
-                            class_id=0,
-                            class_name="human"
-                        ))
-
-        # 4. Multi-Object Tracking (Humans & Vehicles)
+        # 3. Multi-Object Tracking (Humans & Vehicles)
         active_tracks = self.tracker.update(track_detections, current_time=timestamp)
 
-        # 5. Harmful Weapons & Luggage Association
+        # 4. Harmful Weapons Association (Knife, Scissors, Baseball Bat)
         for track in active_tracks:
             if track.class_name == "human":
                 tx1, ty1, tx2, ty2 = track.box
-                margin = 35
-                hx1, hy1, hx2, hy2 = max(0, tx1 - margin), max(0, ty1 - margin), tx2 + margin, ty2 + margin
+                margin = 50
+                hx1, hy1, hx2, hy2 = max(0, tx1 - margin), max(0, ty1 - margin), min(frame_w, tx2 + margin), min(frame_h, ty2 + margin)
 
                 current_items = []
                 for item in carried_candidates:
@@ -235,40 +202,33 @@ class FrameProcessingEngine:
                         if c_item not in track.carried_objects:
                             track.carried_objects.append(c_item)
 
-                    # Check for harmful weapons/tools (knife, scissors, baseball bat)
                     harmful_items = [obj for obj in current_items if obj in ["knife", "scissors", "baseball bat"]]
-                    if harmful_items and not track.harmful_object_alerted:
+                    if harmful_items:
                         track.harmful_object_alerted = True
-                        new_alerts.append(AlertEvent(
-                            camera_id=self.camera_id,
-                            camera_name=self.camera_name,
-                            event_type="harmful_object_detected",
-                            object_type="human",
-                            track_id=track.track_id,
-                            confidence=0.92,
-                            location=self.location,
-                            metadata={"harmful_objects": harmful_items, "threat": "Armed Threat"},
-                            frame_crop=enhanced_frame[max(0, ty1):min(frame_h, ty2), max(0, tx1):min(frame_w, tx2)].copy()
-                        ))
+                        alert_key = f"armed_{track.track_id}"
+                        if alert_key not in self.armed_alerts_sent:
+                            self.armed_alerts_sent.add(alert_key)
+                            items_str = ", ".join(harmful_items).upper()
+                            new_alerts.append(AlertEvent(
+                                camera_id=self.camera_id,
+                                camera_name=self.camera_name,
+                                event_type="harmful_object_detected",
+                                object_type="human",
+                                track_id=track.track_id,
+                                confidence=0.92,
+                                location=self.location,
+                                metadata={"harmful_objects": harmful_items, "threat": f"Armed Intruder ({items_str})"},
+                                frame_crop=enhanced_frame[max(0, ty1):min(frame_h, ty2), max(0, tx1):min(frame_w, tx2)].copy()
+                            ))
 
-        # 6. Facial Recognition & Database Comparison
+        # 5. Facial Recognition within Person ROI & Database Comparison
+        detected_faces: List[Tuple[int, int, int, int]] = []
         if self.enable_face_detection and self.face_recognizer and self.face_detector:
             for track in active_tracks:
                 if track.class_name == "human":
-                    # Locate faces within the upper half of the track ROI
                     roi_faces = self.face_detector.detect_in_roi(enhanced_frame, track.box)
-                    if not roi_faces:
-                        # Fallback: check if any detected global face falls within track box
-                        tx1, ty1, tx2, ty2 = track.box
-                        for fx1, fy1, fx2, fy2 in detected_faces:
-                            fcx, fcy = (fx1 + fx2) // 2, (fy1 + fy2) // 2
-                            if tx1 <= fcx <= tx2 and ty1 <= fcy <= ty2:
-                                roi_faces.append((fx1, fy1, fx2, fy2))
-
                     for fx1, fy1, fx2, fy2 in roi_faces:
-                        if (fx1, fy1, fx2, fy2) not in detected_faces:
-                            detected_faces.append((fx1, fy1, fx2, fy2))
-
+                        detected_faces.append((fx1, fy1, fx2, fy2))
                         face_crop = enhanced_frame[max(0, fy1):min(frame_h, fy2), max(0, fx1):min(frame_w, fx2)]
                         if face_crop.size > 0:
                             matched_id, matched_name, sim, is_clear, sharpness = self.face_recognizer.match_face(
@@ -279,41 +239,35 @@ class FrameProcessingEngine:
                             )
                             track.last_face_clarity = sharpness
 
+                            # If matched with enrolled database profile (e.g. Sujitha B)
                             if matched_name:
                                 track.matched_person_id = matched_id
                                 track.matched_person_name = matched_name
-                            elif is_clear and (timestamp - track.last_face_time >= 3.0):
-                                track.last_face_time = timestamp
-                                # Auto-register unidentified subject with clear face
-                                person_rec, is_new = self.face_recognizer.match_or_create_person(
-                                    face_crop=face_crop,
-                                    full_frame=enhanced_frame,
-                                    camera_id=self.camera_id,
-                                    camera_name=self.camera_name,
-                                    carried_objects=track.carried_objects,
-                                    notes=f"Unregistered subject at {self.location}"
-                                )
-                                track.matched_person_id = person_rec.id
-                                if is_new:
-                                    self.persons_history.append(person_rec)
-                                    if self.on_person_callback:
-                                        self.on_person_callback(person_rec)
 
-                                new_alerts.append(AlertEvent(
-                                    camera_id=self.camera_id,
-                                    camera_name=self.camera_name,
-                                    event_type="face_detected",
-                                    object_type="human",
-                                    track_id=track.track_id,
-                                    confidence=0.90,
-                                    location=self.location,
-                                    frame_crop=enhanced_frame[max(0, track.box[1]):track.box[3], max(0, track.box[0]):track.box[2]].copy()
-                                ))
+                                alert_key = f"match_{track.track_id}_{matched_id}"
+                                if alert_key not in self.matched_alerts_sent:
+                                    self.matched_alerts_sent.add(alert_key)
+                                    new_alerts.append(AlertEvent(
+                                        camera_id=self.camera_id,
+                                        camera_name=self.camera_name,
+                                        event_type="face_detected",
+                                        object_type="human",
+                                        track_id=track.track_id,
+                                        confidence=round(sim, 2),
+                                        location=self.location,
+                                        metadata={
+                                            "matched_person": matched_name,
+                                            "person_id": matched_id,
+                                            "threat_level": "Watchlist Match",
+                                            "status": "Recognized"
+                                        },
+                                        frame_crop=enhanced_frame[max(0, track.box[1]):min(frame_h, track.box[3]), max(0, track.box[0]):min(frame_w, track.box[2])].copy()
+                                    ))
 
         self.active_tracks = active_tracks
         self.detected_faces = detected_faces
 
-        # 7. ANPR Reader
+        # 6. ANPR Reader for Vehicles
         if self.enable_anpr and self.anpr_reader:
             for track in active_tracks:
                 if track.class_name == "vehicle" and track.last_anpr_plate is None:
@@ -326,7 +280,7 @@ class FrameProcessingEngine:
                         if vehicle_crop.size > 0:
                             self.ocr_executor.submit(self._async_anpr_task, vehicle_crop, track.track_id, timestamp)
 
-        # 8. Virtual Fence Intrusion Checks
+        # 7. Virtual Fence Intrusion Checks
         for fence in self.fences:
             for track in active_tracks:
                 intrusion_alert = fence.check_intrusion(
@@ -336,7 +290,7 @@ class FrameProcessingEngine:
                     intrusion_alert.frame_crop = enhanced_frame.copy()
                     new_alerts.append(intrusion_alert)
 
-        # 9. Behavior Analytics (Loitering, Fast Movement, Group Clustering)
+        # 8. Behavior Analytics
         behavior_alerts = self.behavior_analyzer.analyze(
             active_tracks,
             camera_id=self.camera_id,
@@ -348,18 +302,23 @@ class FrameProcessingEngine:
             b_alert.frame_crop = enhanced_frame.copy()
             new_alerts.append(b_alert)
 
-        # 10. Record new alerts
+        # 9. Record new alerts
         for alert in new_alerts:
             self.alerts_history.append(alert)
 
-        # 11. Render Overlays
+        # 10. Render Clean Overlays
         annotated = self._render_overlays(enhanced_frame, active_tracks, detected_faces, self.detected_objects_raw, is_night)
 
         inference_time_ms = (time.perf_counter() - start_time) * 1000.0
+        human_count = sum(1 for t in active_tracks if t.class_name == "human")
+        vehicle_count = sum(1 for t in active_tracks if t.class_name == "vehicle")
+
         metrics = {
             "fps": round(1000.0 / max(inference_time_ms, 1.0), 1),
             "inference_time_ms": round(inference_time_ms, 1),
             "active_tracks": len(active_tracks),
+            "humans": human_count,
+            "vehicles": vehicle_count,
             "total_alerts": len(self.alerts_history),
             "total_persons": len(self.persons_history),
             "is_night": is_night,
@@ -382,7 +341,7 @@ class FrameProcessingEngine:
         raw_objects: List[Detection],
         is_night: bool
     ) -> np.ndarray:
-        """Render HUD, bounding boxes, database matched identities, harmful objects, and fences."""
+        """Render clean, high-contrast bounding boxes, database matched identities, harmful objects, and vehicle plates."""
         out = frame.copy()
 
         # 1. Draw Virtual Fences
@@ -391,86 +350,74 @@ class FrameProcessingEngine:
                 p1, p2 = fence.coordinates[0], fence.coordinates[1]
                 cv2.line(out, p1, p2, COLOR_FENCE, 3)
                 cv2.putText(out, f"FENCE: {fence.name}", (p1[0], max(20, p1[1] - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_FENCE, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_FENCE, 2)
             elif fence.fence_type == "polygon" and fence.np_poly is not None:
                 cv2.polylines(out, [fence.np_poly], isClosed=True, color=COLOR_FENCE, thickness=2)
                 overlay = out.copy()
                 cv2.fillPoly(overlay, [fence.np_poly], (0, 0, 180))
                 cv2.addWeighted(overlay, 0.25, out, 0.75, 0, out)
                 cv2.putText(out, f"RESTRICTED ZONE: {fence.name}", fence.coordinates[0],
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_FENCE, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_FENCE, 2)
 
-        # 2. Draw Harmful Weapons & Luggage Objects
+        # 2. Draw Harmful Weapons
         for obj in raw_objects:
             if obj.class_name in ["knife", "scissors", "baseball bat"]:
                 ox1, oy1, ox2, oy2 = obj.box
                 cv2.rectangle(out, (ox1, oy1), (ox2, oy2), COLOR_HARMFUL, 2)
                 cv2.putText(out, f"WEAPON: {obj.class_name.upper()}", (ox1, max(15, oy1 - 5)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_HARMFUL, 2)
-            elif obj.class_name in ["backpack", "handbag", "suitcase"]:
-                ox1, oy1, ox2, oy2 = obj.box
-                cv2.rectangle(out, (ox1, oy1), (ox2, oy2), COLOR_LUGGAGE, 1)
 
         # 3. Draw Tracked Objects (Humans & Vehicles)
         for track in tracks:
             x1, y1, x2, y2 = track.box
             
-            # Determine color and title
+            # Determine color and ASCII title (NO unicode emojis to avoid ???? characters)
             if track.harmful_object_alerted:
                 color = COLOR_HARMFUL
-                status_title = "ARMED THREAT"
+                status_title = f"ARMED: {','.join(track.carried_objects).upper()}"
             elif track.matched_person_name:
                 color = COLOR_MATCHED
                 status_title = f"MATCHED: {track.matched_person_name}"
             elif track.class_name == "human":
                 color = COLOR_HUMAN
-                if track.last_face_clarity >= 38.0:
-                    status_title = "HUMAN (CLEAR FACE)"
-                elif track.last_face_clarity > 0.0:
-                    status_title = "HUMAN (UNCLEAR FACE)"
+                if track.last_face_clarity >= 35.0:
+                    status_title = "PERSON [FACE CLEAR]"
                 else:
-                    status_title = "HUMAN TARGET"
+                    status_title = "PERSON"
             else:
                 color = COLOR_VEHICLE
-                status_title = "VEHICLE"
+                if track.last_anpr_plate:
+                    status_title = f"VEHICLE [PLATE: {track.last_anpr_plate}]"
+                else:
+                    status_title = "VEHICLE"
 
             # Draw bounding box
             thickness = 3 if (track.harmful_object_alerted or track.matched_person_name) else 2
             cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
 
-            # Build label details
-            plate_tag = f" [{track.last_anpr_plate}]" if track.last_anpr_plate else ""
-            loiter_tag = " [LOITERING]" if track.loitering_alerted else ""
-            fast_tag = " [FAST]" if track.fast_movement_alerted else ""
-            carried_tag = f" [{', '.join(track.carried_objects).upper()}]" if track.carried_objects else ""
-
-            label = f"ID:{track.track_id} | {status_title}{plate_tag}{carried_tag}{loiter_tag}{fast_tag}"
+            # Build label tag
+            label = f"{status_title}"
 
             # Label box background
-            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            cv2.rectangle(out, (x1, max(0, y1 - 22)), (x1 + lw + 8, max(22, y1)), color, -1)
-            cv2.putText(out, label, (x1 + 4, max(16, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+            cv2.rectangle(out, (x1, max(0, y1 - 24)), (x1 + lw + 8, max(24, y1)), color, -1)
+            cv2.putText(out, label, (x1 + 4, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 0, 0), 2, cv2.LINE_AA)
 
-            # Draw trajectory path
-            if len(track.history) > 1:
-                pts = np.array([pt for _, pt in track.history[-25:]], np.int32).reshape((-1, 1, 2))
-                cv2.polylines(out, [pts], isClosed=False, color=color, thickness=2)
-
-        # 4. Draw Detected Face Region Highlights
+        # 4. Draw Face ROI inside human
         for fx1, fy1, fx2, fy2 in faces:
-            cv2.rectangle(out, (fx1, fy1), (fx2, fy2), COLOR_FACE_CLEAR, 2)
-            cv2.putText(out, "FACE REGION", (fx1, max(15, fy1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.40, COLOR_FACE_CLEAR, 1)
+            cv2.rectangle(out, (fx1, fy1), (fx2, fy2), COLOR_FACE, 1)
 
-        # 5. Status HUD Banner (Top left)
+        # 5. Clean Top HUD Banner
+        human_count = sum(1 for t in tracks if t.class_name == "human")
+        vehicle_count = sum(1 for t in tracks if t.class_name == "vehicle")
         hud_bg = (20, 20, 20)
-        cv2.rectangle(out, (10, 10), (370, 75), hud_bg, -1)
-        cv2.rectangle(out, (10, 10), (370, 75), (80, 80, 80), 1)
+        cv2.rectangle(out, (10, 10), (420, 68), hud_bg, -1)
+        cv2.rectangle(out, (10, 10), (420, 68), (80, 80, 80), 1)
 
         night_status = "NIGHT (CLAHE)" if is_night else "DAY (STANDARD)"
         night_color = COLOR_NIGHT if is_night else (100, 255, 100)
-        cv2.putText(out, f"IBVAP | {self.camera_name}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.58, COLOR_TEXT, 2)
-        cv2.putText(out, f"Mode: {night_status}", (20, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.42, night_color, 1)
-        cv2.putText(out, f"Tracks: {len(tracks)} | Alerts: {len(self.alerts_history)} | POIs: {len(self.persons_history)}", (20, 66),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (200, 200, 200), 1)
+        cv2.putText(out, f"IBVAP | {self.camera_name}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_TEXT, 2)
+        cv2.putText(out, f"Mode: {night_status} | Persons: {human_count} | Vehicles: {vehicle_count}", (20, 52),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, night_color, 1)
 
         return out

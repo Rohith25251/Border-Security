@@ -6,13 +6,13 @@
     "fallback_file": "videos/camera1_daytime.mp4",
     "location": "North Perimeter Gate",
     "frame_skip": 2,
-    "conf_threshold": 0.40,
+    "conf_threshold": 0.25,
     "target_inference_size": [
       640,
       640
     ],
     "enable_face_detection": true,
-    "enable_anpr": false,
+    "enable_anpr": true,
     "enable_night_mode": true,
     "fences": [
       {

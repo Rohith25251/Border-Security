@@ -1,7 +1,7 @@
 """
 Pretrained YOLOv8 Object Detection Module.
-Detects humans (class 0) and vehicles (classes 2, 3, 5, 7) without model training.
-Optimized for ultra-low latency real-time surveillance inference.
+Detects Humans (class 0), Vehicles (classes 2, 3, 5, 7), and Weapons (classes 34, 43, 76).
+Optimized for high recall and ultra-low latency real-time surveillance inference.
 """
 
 import os
@@ -14,43 +14,38 @@ from core.models import Detection
 
 logger = logging.getLogger(__name__)
 
-# Optimize PyTorch CPU parallelism for maximum throughput
+# Optimize PyTorch CPU parallelism
 try:
     cpu_count = os.cpu_count() or 4
     torch.set_num_threads(max(2, min(cpu_count, 8)))
 except Exception:
     pass
 
-# COCO Class Mapping
+# COCO Class Mapping:
 # 0: person
 # 2: car, 3: motorcycle, 5: bus, 7: truck
-# 34: baseball bat, 43: knife, 76: scissors (Harmful / Weapons)
-# 24: backpack, 26: handbag, 28: suitcase, 39: bottle, 77: cell phone (Luggage / Items)
+# 34: baseball bat, 43: knife, 76: scissors
 COCO_HUMAN_CLASS = 0
 COCO_VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
-COCO_HARMFUL_CLASSES = {34: "baseball bat", 43: "knife", 76: "scissors"}
-COCO_LUGGAGE_CLASSES = {24: "backpack", 26: "handbag", 28: "suitcase", 39: "bottle", 77: "cell phone"}
+COCO_WEAPON_CLASSES = {34: "baseball bat", 43: "knife", 76: "scissors"}
 
 TARGET_CLASSES = (
     [COCO_HUMAN_CLASS] + 
     list(COCO_VEHICLE_CLASSES.keys()) + 
-    list(COCO_HARMFUL_CLASSES.keys()) + 
-    list(COCO_LUGGAGE_CLASSES.keys())
+    list(COCO_WEAPON_CLASSES.keys())
 )
 
 
 class ObjectDetector:
     """
-    YOLOv8 wrapper configured for Border Surveillance object classes
-    (Humans, Vehicles, Harmful Weapons/Tools, and Suspicious Luggage).
-    Uses official pretrained COCO weights (yolov8n.pt or yolov8s.pt).
+    YOLOv8 wrapper configured for Border Surveillance core detection classes:
+    Humans, Vehicles (Car, Bike, Bus, Truck), and Harmful Weapons (Knife, Scissors, Bat).
     """
 
     def __init__(self, model_name: str = "yolov8n.pt", conf_threshold: float = 0.25, device: str = "auto"):
         self.model_name = model_name
         self.conf_threshold = conf_threshold
         
-        # Auto-detect optimal device
         if device == "auto" or device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
@@ -59,23 +54,22 @@ class ObjectDetector:
         logger.info(f"Loading pretrained YOLOv8 detector '{model_name}' on device '{self.device}'...")
         self.model = YOLO(model_name)
         
-        # Warmup model with dummy frame for instant first-frame response
+        # Warmup model
         try:
             dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-            self.model.predict(source=dummy, conf=self.conf_threshold, classes=TARGET_CLASSES, imgsz=480, verbose=False, device=self.device)
+            self.model.predict(source=dummy, conf=self.conf_threshold, classes=TARGET_CLASSES, imgsz=640, verbose=False, device=self.device)
             logger.info("YOLOv8 detector loaded and warmed up successfully.")
         except Exception as e:
             logger.warning(f"Detector warmup: {e}")
 
     @torch.inference_mode()
-    def detect(self, frame: np.ndarray, imgsz: int = 480) -> List[Detection]:
+    def detect(self, frame: np.ndarray, imgsz: int = 640) -> List[Detection]:
         """
-        Run low-latency inference on the frame and extract human, vehicle & object detections.
+        Run low-latency inference on the frame and extract human, vehicle & weapon detections.
         """
         if frame is None or frame.size == 0:
             return []
 
-        # Run YOLO inference
         results = self.model.predict(
             source=frame,
             conf=self.conf_threshold,
@@ -105,11 +99,9 @@ class ObjectDetector:
             if cls_id == COCO_HUMAN_CLASS:
                 category = "human"
             elif cls_id in COCO_VEHICLE_CLASSES:
-                category = COCO_VEHICLE_CLASSES[cls_id]
-            elif cls_id in COCO_HARMFUL_CLASSES:
-                category = COCO_HARMFUL_CLASSES[cls_id]
-            elif cls_id in COCO_LUGGAGE_CLASSES:
-                category = COCO_LUGGAGE_CLASSES[cls_id]
+                category = "vehicle"
+            elif cls_id in COCO_WEAPON_CLASSES:
+                category = COCO_WEAPON_CLASSES[cls_id]
             else:
                 continue
 
@@ -121,5 +113,3 @@ class ObjectDetector:
             ))
 
         return detections
-
-

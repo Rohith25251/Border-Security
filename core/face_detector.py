@@ -1,7 +1,7 @@
 """
 Pretrained Face Detection Module.
 Detects faces in video frames or within human bounding box crops using OpenCV's built-in detectors.
-Strictly detection only — NO identity recognition or biometric matching.
+Configured with robust scale factors and neighbor thresholds to eliminate background texture false positives.
 """
 
 import os
@@ -10,7 +10,6 @@ import time
 import logging
 from typing import List, Tuple, Optional
 import numpy as np
-from core.models import Detection, AlertEvent
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +17,10 @@ logger = logging.getLogger(__name__)
 class FaceDetector:
     """
     OpenCV-based Face Detector.
-    Supports Haar Cascade and DNN YuNet face detection without external model training.
+    Supports Haar Cascade face detection without external model training.
     """
 
-    def __init__(self, min_confidence: float = 0.5, min_face_size: Tuple[int, int] = (25, 25)):
+    def __init__(self, min_confidence: float = 0.5, min_face_size: Tuple[int, int] = (45, 45)):
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
         
@@ -60,21 +59,28 @@ class FaceDetector:
         rx1, ry1 = max(0, rx1), max(0, ry1)
         rx2, ry2 = min(w, rx2), min(h, ry2)
 
-        if rx2 - rx1 < self.min_face_size[0] or ry2 - ry1 < self.min_face_size[1]:
+        rw, rh = rx2 - rx1, ry2 - ry1
+        if rw < self.min_face_size[0] or rh < self.min_face_size[1]:
             return []
 
-        # Focus primarily on the upper half of the human box where faces reside
-        upper_ry2 = ry1 + int((ry2 - ry1) * 0.55)
+        # Focus on the upper portion of the person where the face is located
+        upper_ry2 = ry1 + int(rh * 0.70)
         crop = frame[ry1:upper_ry2, rx1:rx2]
         if crop.size == 0:
             return []
 
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        # Apply histogram equalization to stabilize lighting
+        gray = cv2.equalizeHist(gray)
+
+        min_w = max(self.min_face_size[0], int(rw * 0.25))
+        min_h = max(self.min_face_size[1], int(rh * 0.20))
+
         faces = self.face_cascade.detectMultiScale(
             gray,
             scaleFactor=1.1,
-            minNeighbors=4,
-            minSize=self.min_face_size
+            minNeighbors=6,
+            minSize=(min_w, min_h)
         )
 
         global_faces = []
@@ -84,16 +90,21 @@ class FaceDetector:
         return global_faces
 
     def detect(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
-        """Run face detection across the full frame."""
-        if frame is None:
+        """
+        Run high-precision face detection across the full frame.
+        Uses stricter thresholds (minSize=70x70, minNeighbors=8) to prevent false positives on background grids.
+        """
+        if frame is None or frame.size == 0:
             return []
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.equalizeHist(gray)
+
         faces = self.face_cascade.detectMultiScale(
             gray,
-            scaleFactor=1.15,
-            minNeighbors=5,
-            minSize=self.min_face_size
+            scaleFactor=1.12,
+            minNeighbors=8,
+            minSize=(70, 70)
         )
 
         return [(x, y, x + w, y + h) for (x, y, w, h) in faces]
