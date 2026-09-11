@@ -12,6 +12,7 @@ import numpy as np
 
 from db.supabase_client import SupabaseManager
 from db.queue_manager import AlertQueueManager
+from core.models import PersonRecord
 from core.camera_worker import CameraWorkerThread
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,18 @@ class MultiCameraManager:
         if worker:
             return worker.get_latest_raw_frame()
         return None
+
+    def update_face_profile(self, person_id: str, name: str, signature: np.ndarray, record: Optional[PersonRecord] = None):
+        """Pre-index face signature across all active camera engines immediately."""
+        for worker in self.workers.values():
+            if worker.engine and worker.engine.face_recognizer:
+                worker.engine.face_recognizer.register_profile_signature(person_id, name, signature, record)
+
+    def remove_face_profile(self, person_id: str):
+        """Remove a deleted person from all camera engines instantly."""
+        for worker in self.workers.values():
+            if worker.engine and worker.engine.face_recognizer:
+                worker.engine.face_recognizer.remove_profile(person_id)
 
     def get_all_statuses(self) -> List[Dict[str, Any]]:
         """Get telemetry and analytics status across all active cameras."""

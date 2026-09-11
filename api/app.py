@@ -24,6 +24,7 @@ except Exception:
     pass
 
 from core.models import AlertEvent, PersonRecord
+from core.face_recognizer import FaceRecognizer
 from core.multi_camera_manager import MultiCameraManager
 from db.supabase_client import SupabaseManager
 from api.schemas import (
@@ -45,6 +46,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 # Global System Managers
 supabase_mgr = SupabaseManager()
 c2_dispatcher = C2WebhookDispatcher()
+face_preprocessor = FaceRecognizer()
 camera_manager = MultiCameraManager(
     config_path="config/cameras.json",
     supabase_manager=supabase_mgr,
@@ -382,15 +384,27 @@ async def get_persons(
 
 @app.post("/api/persons", response_model=PersonResponse, tags=["Persons"])
 async def create_person(body: PersonCreateRequest = Body(...)):
-    """Add a new person profile (Name, DOB, Description, Image)."""
+    """Add a new person profile (Name, DOB, Description, Image) with immediate facial signature pre-processing."""
+    raw_img = body.image_url or body.face_image_url or ""
+    face_crop, signature = None, None
+    if raw_img:
+        face_crop, signature = face_preprocessor.process_and_extract_face_from_image(raw_img)
+
     record = PersonRecord(
         name=body.name,
         dob=body.dob or "",
         description=body.description or "",
-        image_url=body.image_url or body.face_image_url or "",
-        face_image_url=body.image_url or body.face_image_url or ""
+        image_url=raw_img,
+        face_image_url=raw_img,
+        face_crop=face_crop
     )
     res = supabase_mgr.insert_person(record)
+    
+    # Pre-index face signature across all active camera engines immediately
+    if signature is not None:
+        camera_manager.update_face_profile(res.get("id", record.id), record.name, signature, record)
+        logger.info(f"Pre-processed and indexed facial embedding for '{record.name}' across all camera engines.")
+
     return res
 
 
@@ -399,7 +413,7 @@ async def update_person(
     person_id: str = Path(..., description="Person ID"),
     body: PersonUpdateRequest = Body(...)
 ):
-    """Update person details (Name, DOB, Description, Image)."""
+    """Update person details (Name, DOB, Description, Image) and refresh facial signature in memory."""
     updates = {}
     if body.name is not None:
         updates["name"] = body.name
@@ -414,6 +428,14 @@ async def update_person(
     updated = supabase_mgr.update_person(person_id, updates)
     if not updated:
         raise HTTPException(status_code=404, detail=f"Person '{person_id}' not found")
+
+    # If image or name changed, refresh signature
+    img_to_process = updated.get("image_url") or updated.get("face_image_url")
+    if img_to_process:
+        face_crop, signature = face_preprocessor.process_and_extract_face_from_image(img_to_process)
+        if signature is not None:
+            camera_manager.update_face_profile(person_id, updated.get("name", "Subject"), signature)
+
     return updated
 
 
@@ -425,6 +447,9 @@ async def delete_person(person_id: str = Path(..., description="Person ID")):
     success = supabase_mgr.delete_person(person_id)
     if not success:
         raise HTTPException(status_code=404, detail=f"Failed to delete person '{person_id}'")
+    
+    # Remove from camera recognition memory instantly
+    camera_manager.remove_face_profile(person_id)
     return {"status": "deleted", "id": person_id}
 
 

@@ -1,7 +1,7 @@
 """
 Face Recognition & Clarity Assessment Module for IBVAP.
-Evaluates face image sharpness/resolution, extracts feature signatures,
-and matches/registers Persons of Interest (POI) profiles for surveillance intelligence.
+Uses OpenCV SFace Deep Neural Network (128-D Invariant Embeddings)
+to provide high-precision, low-latency facial identification against enrolled database profiles.
 """
 
 import os
@@ -9,115 +9,74 @@ import cv2
 import time
 import base64
 import logging
-import numpy as np
 import urllib.request
+import numpy as np
 from typing import Tuple, Optional, Dict, Any, List
 from core.models import PersonRecord
+from core.face_detector import FaceDetector
 
 logger = logging.getLogger(__name__)
+
+# SFace Model Constants
+SFACE_MODEL_FILENAME = "face_recognition_sface_2021dec.onnx"
+SFACE_DOWNLOAD_URL = "https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx"
 
 
 class FaceRecognizer:
     """
-    Evaluates face clarity, extracts invariant face signatures,
-    synchronizes with database records, and recognizes registered subjects in real time.
+    High-precision Face Recognition Engine.
+    Leverages OpenCV SFace deep neural network embeddings for zero-shot facial matching
+    against enrolled database profiles, with sub-millisecond live inference and strict thresholding.
     """
 
-    def __init__(self, min_size: int = 28, min_sharpness: float = 38.0, similarity_threshold: float = 0.65):
+    def __init__(
+        self,
+        min_size: int = 35,
+        min_sharpness: float = 38.0,
+        similarity_threshold: float = 0.50
+    ):
         self.min_size = min_size
         self.min_sharpness = min_sharpness
         self.similarity_threshold = similarity_threshold
-        
+
         # In-memory POI signature index:
-        # { person_id: { "name": str, "signature": np.ndarray, "record": PersonRecord } }
+        # { person_id: { "name": str, "signature": np.ndarray (1, 128), "record": PersonRecord } }
         self.known_profiles: Dict[str, Dict[str, Any]] = {}
-        self.profile_counter = 100
-        self.last_sync_time = 0.0
+        self.last_sync_time: float = 0.0
+        self.face_detector = FaceDetector()
 
-    def sync_database_profiles(self, supabase_mgr):
-        """
-        Synchronize registered persons from Supabase / local storage into face recognition memory.
-        """
-        if supabase_mgr is None:
-            return
+        # Initialize SFace Deep Recognition Model
+        self.sface: Optional[cv2.FaceRecognizerSF] = None
+        self._init_sface_model()
 
-        now = time.time()
-        # Avoid syncing too frequently
-        if now - self.last_sync_time < 8.0:
-            return
+    def _init_sface_model(self):
+        """Locate or download the SFace ONNX deep face model."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        models_dir = os.path.join(project_root, "models")
+        os.makedirs(models_dir, exist_ok=True)
+        sface_path = os.path.join(models_dir, SFACE_MODEL_FILENAME)
 
-        self.last_sync_time = now
+        if not os.path.exists(sface_path) or os.path.getsize(sface_path) < 1000000:
+            try:
+                logger.info("Downloading official SFace deep face recognition ONNX model...")
+                urllib.request.urlretrieve(SFACE_DOWNLOAD_URL, sface_path)
+                logger.info(f"SFace model downloaded ({os.path.getsize(sface_path)} bytes).")
+            except Exception as e:
+                logger.error(f"Failed to download SFace model: {e}")
 
-        try:
-            persons = supabase_mgr.fetch_persons(limit=200)
-            for p in persons:
-                pid = p.get("id") or p.get("person_id")
-                name = p.get("name") or "Subject"
-                if not pid:
-                    continue
-
-                # If already registered and have signature, skip re-computation
-                if pid in self.known_profiles and self.known_profiles[pid].get("signature") is not None:
-                    # Keep name updated
-                    self.known_profiles[pid]["name"] = name
-                    continue
-
-                # Try loading image to compute feature vector
-                img_path_or_url = p.get("image_url") or p.get("face_image_url") or ""
-                img = None
-
-                if img_path_or_url:
-                    if img_path_or_url.startswith("data:image/"):
-                        try:
-                            header, encoded = img_path_or_url.split(",", 1)
-                            raw_bytes = base64.b64decode(encoded)
-                            nparr = np.frombuffer(raw_bytes, np.uint8)
-                            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                        except Exception:
-                            pass
-                    elif img_path_or_url.startswith("/api/persons/image/"):
-                        # Extract local path from URL
-                        subpath = img_path_or_url.replace("/api/persons/image/", "")
-                        local_file = os.path.join("test_outputs", subpath)
-                        if os.path.exists(local_file):
-                            img = cv2.imread(local_file)
-                    elif os.path.exists(img_path_or_url):
-                        img = cv2.imread(img_path_or_url)
-                    elif img_path_or_url.startswith("http"):
-                        # Check local cache first
-                        fname = img_path_or_url.split("/")[-1]
-                        local_cache = os.path.join("test_outputs", "faces", fname)
-                        if os.path.exists(local_cache):
-                            img = cv2.imread(local_cache)
-                        else:
-                            try:
-                                resp = urllib.request.urlopen(img_path_or_url, timeout=2)
-                                raw_bytes = resp.read()
-                                nparr = np.frombuffer(raw_bytes, np.uint8)
-                                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                            except Exception:
-                                pass
-
-                if img is not None and img.size > 0:
-                    vec = self.extract_feature_vector(img)
-                    self.known_profiles[pid] = {
-                        "name": name,
-                        "signature": vec,
-                        "record": PersonRecord(
-                            id=pid,
-                            name=name,
-                            dob=p.get("dob", ""),
-                            description=p.get("description", ""),
-                            image_url=img_path_or_url
-                        )
-                    }
-                    logger.info(f"Loaded facial signature for registered subject: [{name}] ({pid[:8]})")
-        except Exception as e:
-            logger.warning(f"Error synchronizing face database profiles: {e}")
+        if os.path.exists(sface_path) and os.path.getsize(sface_path) > 1000000:
+            try:
+                self.sface = cv2.FaceRecognizerSF.create(sface_path, "")
+                logger.info(f"SFace Deep Face Recognizer initialized from {sface_path}")
+            except Exception as e:
+                logger.error(f"Error loading SFace ONNX: {e}")
+                self.sface = None
+        else:
+            logger.warning("SFace ONNX model not found. Fallback feature extraction active.")
 
     def evaluate_clarity(self, face_crop: np.ndarray) -> Tuple[bool, float]:
         """
-        Check if the detected face crop has sufficient resolution and sharpness for recognition.
+        Check if the detected face crop has sufficient resolution, sharpness, and dynamic range.
         Returns: (is_clear, sharpness_score)
         """
         if face_crop is None or face_crop.size == 0:
@@ -137,49 +96,177 @@ class FaceRecognizer:
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
         sharpness = float(laplacian.var())
 
-        is_clear = sharpness >= self.min_sharpness
+        # Check contrast dynamic range
+        contrast = float(np.std(gray))
+
+        is_clear = (sharpness >= self.min_sharpness) and (contrast >= 15.0)
         return is_clear, round(sharpness, 2)
 
-    def extract_feature_vector(self, face_crop: np.ndarray) -> np.ndarray:
+    def extract_feature_vector(self, face_crop: np.ndarray) -> Optional[np.ndarray]:
         """
-        Extract normalized color and structural gradient feature descriptor.
-        Resizes to 64x64, computes color & gradient histograms for fast invariant matching.
+        Extract 128-D deep neural network embedding from normalized face crop.
         """
         if face_crop is None or face_crop.size == 0:
-            return np.zeros(128, dtype=np.float32)
+            return None
 
-        # Standardize face crop
-        resized = cv2.resize(face_crop, (64, 64))
-        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY) if len(resized.shape) == 3 else resized
+        # Standard SFace input size: 112 x 112
+        resized = cv2.resize(face_crop, (112, 112))
+        if len(resized.shape) == 2:
+            resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
 
-        # 1. 2D DCT / frequency vector
-        dct = cv2.dct(np.float32(gray))
-        low_freq = dct[:8, :8].flatten()
+        if self.sface is not None:
+            try:
+                feat = self.sface.feature(resized)
+                return feat
+            except Exception as e:
+                logger.error(f"SFace feature extraction error: {e}")
 
-        # 2. Local gradient histograms
-        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=1)
-        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=1)
-        mag, ang = cv2.cartToPolar(gx, gy, angleInDegrees=True)
-        hist, _ = np.histogram(ang, bins=16, range=(0, 360), weights=mag)
-
-        # 3. HSV Color histogram
-        if len(face_crop.shape) == 3:
-            hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
-            h_hist, _ = np.histogram(hsv[:, :, 0], bins=16, range=(0, 180))
-            s_hist, _ = np.histogram(hsv[:, :, 1], bins=16, range=(0, 256))
-            color_feat = np.concatenate([h_hist, s_hist]).astype(np.float32)
-            if np.linalg.norm(color_feat) > 0:
-                color_feat /= np.linalg.norm(color_feat)
-        else:
-            color_feat = np.zeros(32, dtype=np.float32)
-
-        # 4. Concatenate and L2 normalize
-        feature_vec = np.concatenate([low_freq, hist, color_feat]).astype(np.float32)
-        norm = np.linalg.norm(feature_vec)
+        # Fallback structural feature vector
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        norm_gray = clahe.apply(gray)
+        dct = cv2.dct(np.float32(norm_gray))
+        feat = dct[:8, :16].flatten().astype(np.float32)
+        feat -= np.mean(feat)
+        norm = np.linalg.norm(feat)
         if norm > 0:
-            feature_vec /= norm
+            feat /= norm
+        return feat.reshape(1, -1)
 
-        return feature_vec
+    def process_and_extract_face_from_image(self, image_input: Any) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Pre-process raw uploaded image on database entry:
+        1. Decodes image (base64, URL, path, or ndarray).
+        2. Detects and isolates primary face bounding box.
+        3. Computes normalized 128-D deep feature signature.
+        Returns: (face_crop, feature_signature)
+        """
+        img: Optional[np.ndarray] = None
+
+        if isinstance(image_input, np.ndarray):
+            img = image_input
+        elif isinstance(image_input, str):
+            if image_input.startswith("data:image/"):
+                try:
+                    header, encoded = image_input.split(",", 1)
+                    raw_bytes = base64.b64decode(encoded)
+                    nparr = np.frombuffer(raw_bytes, np.uint8)
+                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except Exception as e:
+                    logger.warning(f"Base64 decode error: {e}")
+            elif image_input.startswith("http://") or image_input.startswith("https://"):
+                try:
+                    resp = urllib.request.urlopen(image_input, timeout=4)
+                    raw_bytes = resp.read()
+                    nparr = np.frombuffer(raw_bytes, np.uint8)
+                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except Exception as e:
+                    logger.warning(f"HTTP image load error: {e}")
+            elif os.path.exists(image_input):
+                img = cv2.imread(image_input)
+
+        if img is None or img.size == 0:
+            return None, None
+
+        # Detect face inside the image
+        faces = self.face_detector.detect(img)
+        if faces and len(faces) > 0:
+            # Pick the largest face detected
+            largest_face = max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
+            fx1, fy1, fx2, fy2 = largest_face
+            h, w = img.shape[:2]
+            # Add 10% padding
+            pw, ph = int((fx2 - fx1) * 0.1), int((fy2 - fy1) * 0.1)
+            cx1, cy1 = max(0, fx1 - pw), max(0, fy1 - ph)
+            cx2, cy2 = min(w, fx2 + pw), min(h, fy2 + ph)
+            face_crop = img[cy1:cy2, cx1:cx2].copy()
+        else:
+            # Face already tightly cropped
+            face_crop = img.copy()
+
+        # Pre-compute signature
+        signature = self.extract_feature_vector(face_crop)
+        return face_crop, signature
+
+    def register_profile_signature(
+        self,
+        person_id: str,
+        name: str,
+        signature: np.ndarray,
+        record: Optional[PersonRecord] = None
+    ):
+        """Pre-index a known person's deep signature into recognition memory."""
+        if signature is None:
+            return
+        self.known_profiles[person_id] = {
+            "name": name,
+            "signature": signature,
+            "record": record
+        }
+        logger.info(f"Facial signature indexed in memory for: [{name}] ({person_id[:8]})")
+
+    def remove_profile(self, person_id: str):
+        """Remove a deleted person profile from recognition memory."""
+        if person_id in self.known_profiles:
+            removed = self.known_profiles.pop(person_id, None)
+            if removed:
+                logger.info(f"Removed facial signature for: [{removed.get('name')}] ({person_id[:8]})")
+
+    def sync_database_profiles(self, supabase_mgr):
+        """
+        Synchronize registered persons from Supabase / local storage into memory.
+        Only runs every 10s to prevent overhead.
+        """
+        if supabase_mgr is None:
+            return
+
+        now = time.time()
+        if now - self.last_sync_time < 10.0:
+            return
+        self.last_sync_time = now
+
+        try:
+            persons = supabase_mgr.fetch_persons(limit=200)
+            active_ids = set()
+
+            for p in persons:
+                pid = p.get("id") or p.get("person_id")
+                name = p.get("name") or "Subject"
+                if not pid:
+                    continue
+
+                active_ids.add(pid)
+
+                # Skip if already indexed
+                if pid in self.known_profiles and self.known_profiles[pid].get("signature") is not None:
+                    self.known_profiles[pid]["name"] = name
+                    continue
+
+                img_path_or_url = p.get("image_url") or p.get("face_image_url") or ""
+                if img_path_or_url:
+                    face_crop, signature = self.process_and_extract_face_from_image(img_path_or_url)
+                    if signature is not None:
+                        self.register_profile_signature(
+                            person_id=pid,
+                            name=name,
+                            signature=signature,
+                            record=PersonRecord(
+                                id=pid,
+                                name=name,
+                                dob=p.get("dob", ""),
+                                description=p.get("description", ""),
+                                image_url=img_path_or_url
+                            )
+                        )
+
+            # Prune deleted profiles
+            cached_ids = list(self.known_profiles.keys())
+            for cid in cached_ids:
+                if cid not in active_ids and not cid.startswith("POI-"):
+                    self.remove_profile(cid)
+
+        except Exception as e:
+            logger.warning(f"Error synchronizing face database profiles: {e}")
 
     def match_face(
         self,
@@ -189,75 +276,46 @@ class FaceRecognizer:
         carried_objects: List[str] = None
     ) -> Tuple[Optional[str], Optional[str], float, bool, float]:
         """
-        Matches a face crop against all enrolled database profiles.
+        Matches a detected face crop against all enrolled database profiles.
         Returns: (matched_person_id, matched_person_name, similarity, is_clear, sharpness)
         """
         is_clear, sharpness = self.evaluate_clarity(face_crop)
-        if not is_clear:
-            return None, None, 0.0, False, sharpness
+        if not is_clear or len(self.known_profiles) == 0:
+            return None, None, 0.0, is_clear, sharpness
 
-        features = self.extract_feature_vector(face_crop)
+        live_feature = self.extract_feature_vector(face_crop)
+        if live_feature is None:
+            return None, None, 0.0, is_clear, sharpness
 
-        best_match_id = None
-        best_match_name = None
-        best_sim = 0.0
+        best_match_id: Optional[str] = None
+        best_match_name: Optional[str] = None
+        best_sim: float = -1.0
 
         for pid, data in self.known_profiles.items():
-            known_vec = data.get("signature")
-            if known_vec is not None:
-                sim = float(np.dot(features, known_vec))
-                if sim > best_sim:
-                    best_sim = sim
-                    best_match_id = pid
-                    best_match_name = data.get("name", "Subject")
+            known_sig = data.get("signature")
+            if known_sig is None:
+                continue
 
+            if self.sface is not None:
+                # SFace Cosine Match
+                try:
+                    sim = float(self.sface.match(live_feature, known_sig, cv2.FaceRecognizerSF_FR_COSINE))
+                except Exception:
+                    sim = float(np.dot(live_feature.flatten(), known_sig.flatten()) / (
+                        np.linalg.norm(live_feature) * np.linalg.norm(known_sig) + 1e-6
+                    ))
+            else:
+                sim = float(np.dot(live_feature.flatten(), known_sig.flatten()) / (
+                    np.linalg.norm(live_feature) * np.linalg.norm(known_sig) + 1e-6
+                ))
+
+            if sim > best_sim:
+                best_sim = sim
+                best_match_id = pid
+                best_match_name = data.get("name", "Subject")
+
+        # Strict threshold check: SFace Cosine threshold >= 0.50
         if best_match_id and best_sim >= self.similarity_threshold:
             return best_match_id, best_match_name, best_sim, True, sharpness
 
-        return None, None, best_sim, True, sharpness
-
-    def match_or_create_person(
-        self,
-        face_crop: np.ndarray,
-        full_frame: np.ndarray,
-        camera_id: str,
-        camera_name: str,
-        carried_objects: List[str] = None,
-        notes: str = ""
-    ) -> Tuple[PersonRecord, bool]:
-        """
-        Matches a clear face against known POI profiles, or registers a new PersonRecord.
-        Returns: (person_record, is_new_subject)
-        """
-        if carried_objects is None:
-            carried_objects = []
-
-        pid, name, sim, is_clear, sharpness = self.match_face(
-            face_crop, camera_id=camera_id, camera_name=camera_name, carried_objects=carried_objects
-        )
-
-        if pid and pid in self.known_profiles:
-            matched_record: PersonRecord = self.known_profiles[pid]["record"]
-            return matched_record, False
-
-        # Create new Person profile
-        self.profile_counter += 1
-        new_pid = f"POI-{self.profile_counter:04d}"
-        new_name = f"Subject #{self.profile_counter:03d}"
-
-        new_record = PersonRecord(
-            id=new_pid,
-            name=new_name,
-            dob="Not Specified",
-            description=notes or f"Identified at {camera_name}",
-            face_crop=face_crop.copy() if face_crop is not None else None
-        )
-
-        features = self.extract_feature_vector(face_crop)
-        self.known_profiles[new_pid] = {
-            "name": new_name,
-            "signature": features,
-            "record": new_record
-        }
-
-        return new_record, True
+        return None, None, max(0.0, best_sim), True, sharpness
