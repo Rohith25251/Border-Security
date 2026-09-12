@@ -34,6 +34,13 @@ class AlertResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class FenceConfigRequest(BaseModel):
+    enabled: bool = Field(False, description="Whether virtual fencing is active")
+    type: str = Field("horizontal", description="'horizontal' or 'vertical'")
+    position: float = Field(50.0, description="Position percentage (0-100%) across the frame")
+    name: Optional[str] = Field("Virtual Boundary", description="Display name for the fence line")
+
+
 class CameraStatusResponse(BaseModel):
     camera_id: str
     camera_name: str
@@ -54,6 +61,8 @@ class CameraStatusResponse(BaseModel):
     enable_anpr: Optional[bool] = True
     enable_night_mode: Optional[bool] = True
     conf_threshold: Optional[float] = 0.25
+    virtual_fence: Optional[Dict[str, Any]] = None
+    fences: Optional[List[Dict[str, Any]]] = None
 
 
 class CameraCreateRequest(BaseModel):
@@ -65,6 +74,7 @@ class CameraCreateRequest(BaseModel):
     enable_face_detection: Optional[bool] = Field(True, description="Enable face detection & database matching")
     enable_anpr: Optional[bool] = Field(True, description="Enable vehicle number plate recognition")
     enable_night_mode: Optional[bool] = Field(True, description="Enable low-light enhancement")
+    virtual_fence: Optional[Dict[str, Any]] = Field(None, description="Virtual fence configuration")
     frame_skip: Optional[int] = Field(2, description="Frame skip count")
 
 
@@ -77,6 +87,8 @@ class CameraUpdateRequest(BaseModel):
     enable_face_detection: Optional[bool] = None
     enable_anpr: Optional[bool] = None
     enable_night_mode: Optional[bool] = None
+    virtual_fence: Optional[Dict[str, Any]] = None
+    fences: Optional[List[Dict[str, Any]]] = None
     status: Optional[str] = None
 
 

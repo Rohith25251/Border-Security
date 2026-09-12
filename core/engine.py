@@ -360,7 +360,8 @@ class FrameProcessingEngine:
         for fence in self.fences:
             for track in active_tracks:
                 intrusion_alert = fence.check_intrusion(
-                    track, camera_id=self.camera_id, camera_name=self.camera_name, location=self.location
+                    track, camera_id=self.camera_id, camera_name=self.camera_name, location=self.location,
+                    frame_w=frame_w, frame_h=frame_h
                 )
                 if intrusion_alert:
                     intrusion_alert.frame_crop = enhanced_frame.copy()
@@ -418,6 +419,10 @@ class FrameProcessingEngine:
             return frame
         return self._render_overlays(frame, self.active_tracks, self.detected_faces, self.detected_objects_raw, self.is_night)
 
+    def set_fences(self, fences: List[VirtualFence]):
+        """Dynamically update virtual fence boundaries at runtime."""
+        self.fences = fences
+
     def _render_overlays(
         self,
         frame: np.ndarray,
@@ -428,10 +433,23 @@ class FrameProcessingEngine:
     ) -> np.ndarray:
         """Render clean, high-contrast bounding boxes, database matched identities, harmful objects, and vehicle plates."""
         out = frame.copy()
+        frame_h, frame_w = out.shape[:2]
 
         # 1. Draw Virtual Fences
         for fence in self.fences:
-            if fence.fence_type == "line" and len(fence.coordinates) >= 2:
+            if fence.fence_type == "horizontal":
+                p1, p2 = fence.get_endpoints(frame_w, frame_h)
+                y_pos = p1[1]
+                cv2.line(out, p1, p2, COLOR_FENCE, 3)
+                cv2.putText(out, f"FENCE: {fence.name} ({int(fence.position)}%)", (15, max(25, y_pos - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_FENCE, 2)
+            elif fence.fence_type == "vertical":
+                p1, p2 = fence.get_endpoints(frame_w, frame_h)
+                x_pos = p1[0]
+                cv2.line(out, p1, p2, COLOR_FENCE, 3)
+                cv2.putText(out, f"FENCE: {fence.name} ({int(fence.position)}%)", (min(frame_w - 220, max(15, x_pos + 8)), 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_FENCE, 2)
+            elif fence.fence_type == "line" and len(fence.coordinates) >= 2:
                 p1, p2 = fence.coordinates[0], fence.coordinates[1]
                 cv2.line(out, p1, p2, COLOR_FENCE, 3)
                 cv2.putText(out, f"FENCE: {fence.name}", (p1[0], max(20, p1[1] - 10)),

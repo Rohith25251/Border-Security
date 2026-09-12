@@ -44,7 +44,7 @@ export default function App() {
   // Fetch telemetry and camera status
   const fetchCameras = useCallback(async () => {
     try {
-      const res = await fetch('/api/cameras');
+      const res = await fetch(`/api/cameras?_t=${Date.now()}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data) && data.length > 0) {

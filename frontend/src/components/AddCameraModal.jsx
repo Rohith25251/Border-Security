@@ -73,6 +73,9 @@ export default function AddCameraModal({ isOpen, onClose, onCameraAdded }) {
   const [enableFace, setEnableFace] = useState(true);
   const [enableAnpr, setEnableAnpr] = useState(true);
   const [enableNight, setEnableNight] = useState(true);
+  const [enableFence, setEnableFence] = useState(false);
+  const [fenceType, setFenceType] = useState('horizontal');
+  const [fencePos, setFencePos] = useState(50);
   const [confThreshold, setConfThreshold] = useState(0.25);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -91,8 +94,6 @@ export default function AddCameraModal({ isOpen, onClose, onCameraAdded }) {
       setRtspUrl(derived.url);
     }
   };
-
-
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -117,6 +118,12 @@ export default function AddCameraModal({ isOpen, onClose, onCameraAdded }) {
           enable_face_detection: enableFace,
           enable_anpr: enableAnpr,
           enable_night_mode: enableNight,
+          virtual_fence: {
+            enabled: enableFence,
+            type: fenceType,
+            position: parseFloat(fencePos),
+            name: `${name.trim() || 'Camera'} Barrier`
+          },
           conf_threshold: parseFloat(confThreshold)
         })
       });
@@ -406,6 +413,76 @@ export default function AddCameraModal({ isOpen, onClose, onCameraAdded }) {
                 <Moon size={16} color="#d97706" />
                 <span style={{ fontWeight: 500 }}>CLAHE Night Enhancement (Low-Light)</span>
               </label>
+
+              {/* Virtual Fence Option */}
+              <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.86rem', color: '#1e293b', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={enableFence}
+                    onChange={(e) => setEnableFence(e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: '#ef4444' }}
+                  />
+                  <Shield size={16} color="#ef4444" />
+                  <span style={{ fontWeight: 600, color: enableFence ? '#b91c1c' : '#1e293b' }}>
+                    Enable Virtual Fence Intrusion Boundary
+                  </span>
+                </label>
+
+                {enableFence && (
+                  <div style={{ paddingLeft: '26px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setFenceType('horizontal')}
+                        style={{
+                          flex: 1,
+                          padding: '4px 8px',
+                          fontSize: '0.74rem',
+                          fontWeight: fenceType === 'horizontal' ? 700 : 500,
+                          borderRadius: '6px',
+                          border: fenceType === 'horizontal' ? '1px solid #ef4444' : '1px solid #e2e8f0',
+                          background: fenceType === 'horizontal' ? '#fee2e2' : '#ffffff',
+                          color: fenceType === 'horizontal' ? '#991b1b' : '#475569',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ━ Horizontal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFenceType('vertical')}
+                        style={{
+                          flex: 1,
+                          padding: '4px 8px',
+                          fontSize: '0.74rem',
+                          fontWeight: fenceType === 'vertical' ? 700 : 500,
+                          borderRadius: '6px',
+                          border: fenceType === 'vertical' ? '1px solid #ef4444' : '1px solid #e2e8f0',
+                          background: fenceType === 'vertical' ? '#fee2e2' : '#ffffff',
+                          color: fenceType === 'vertical' ? '#991b1b' : '#475569',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ┃ Vertical
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.74rem', color: '#64748b' }}>Position ({fencePos}%):</span>
+                      <input
+                        type="range"
+                        min="5"
+                        max="95"
+                        step="1"
+                        value={fencePos}
+                        onChange={(e) => setFencePos(parseFloat(e.target.value))}
+                        style={{ flex: 1, accentColor: '#ef4444', height: '4px', cursor: 'pointer' }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

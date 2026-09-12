@@ -33,6 +33,7 @@ from api.schemas import (
     CameraStatusResponse,
     CameraCreateRequest,
     CameraUpdateRequest,
+    FenceConfigRequest,
     StatsResponse,
     WebhookConfigRequest,
     WebhookConfigResponse,
@@ -182,6 +183,12 @@ async def add_camera(body: CameraCreateRequest = Body(...)):
         "enable_face_detection": body.enable_face_detection if body.enable_face_detection is not None else True,
         "enable_anpr": body.enable_anpr if body.enable_anpr is not None else True,
         "enable_night_mode": body.enable_night_mode if body.enable_night_mode is not None else True,
+        "virtual_fence": body.virtual_fence or {
+            "enabled": False,
+            "type": "horizontal",
+            "position": 50,
+            "name": "Virtual Fence"
+        },
         "frame_skip": body.frame_skip or 2
     }
     configured = camera_manager.add_camera(camera_data)
@@ -211,6 +218,10 @@ async def update_camera(
         updates["enable_anpr"] = body.enable_anpr
     if body.enable_night_mode is not None:
         updates["enable_night_mode"] = body.enable_night_mode
+    if body.virtual_fence is not None:
+        updates["virtual_fence"] = body.virtual_fence
+    if body.fences is not None:
+        updates["fences"] = body.fences
     if body.status is not None:
         updates["status"] = body.status
 
@@ -218,6 +229,21 @@ async def update_camera(
     if not updated:
         raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
     return {"status": "updated", "camera": updated}
+
+
+@app.put("/api/cameras/{camera_id}/fence", tags=["Cameras"])
+async def update_camera_fence(
+    camera_id: str = Path(..., description="Camera ID"),
+    body: Dict[str, Any] = Body(...)
+):
+    """
+    Dynamically update virtual fencing configuration (toggle ON/OFF, horizontal/vertical orientation, and position 0-100%).
+    Takes effect immediately on live stream without restart.
+    """
+    updated = camera_manager.update_camera_fence(camera_id, body)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
+    return {"status": "updated", "camera_id": camera_id, "virtual_fence": updated.get("virtual_fence")}
 
 
 @app.delete("/api/cameras/{camera_id}", tags=["Cameras"])
