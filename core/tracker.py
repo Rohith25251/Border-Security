@@ -37,7 +37,7 @@ class CentroidTracker:
     Maintains persistent track IDs and trajectory history for behavior analytics.
     """
 
-    def __init__(self, max_disappeared: int = 25, max_distance: float = 90.0, min_iou: float = 0.15):
+    def __init__(self, max_disappeared: int = 8, max_distance: float = 180.0, min_iou: float = 0.15):
         self.next_track_id: int = 1
         self.tracks: Dict[int, TrackedObject] = {}
         self.max_disappeared = max_disappeared

@@ -24,44 +24,42 @@ def lines_intersect(p1: Tuple[float, float], p2: Tuple[float, float],
 class VirtualFence:
     """
     Virtual boundary definition and intrusion monitor.
-    Supports:
-    - "horizontal": full-width horizontal fence at adjustable vertical position (0-100%)
-    - "vertical": full-height vertical fence at adjustable horizontal position (0-100%)
-    - "line": 2-point tripwire line
-    - "polygon": N-point restricted polygon zone
+    Can be a 2-point line (tripwire), vertical/horizontal fence line, or an N-point polygon.
     """
 
     def __init__(
         self,
         fence_id: str,
-        coordinates: Optional[List[Tuple[int, int]]] = None,
-        fence_type: str = "horizontal",
-        name: str = "Virtual Boundary",
-        position: float = 50.0
+        coordinates: List[Tuple[int, int]] = None,
+        fence_type: str = "line",
+        name: str = "Boundary A",
+        position: Optional[float] = 50.0
     ):
         self.fence_id = fence_id
         self.coordinates = coordinates or []
-        self.fence_type = fence_type.lower()    # "horizontal", "vertical", "line", or "polygon"
+        self.fence_type = (fence_type or "line").lower()
         self.name = name
-        self.position = float(position)         # 0.0 to 100.0 %
-        self.np_poly = (
-            np.array(self.coordinates, dtype=np.int32).reshape((-1, 1, 2))
-            if len(self.coordinates) >= 3
-            else None
-        )
+        self.position = float(position) if position is not None else 50.0
+        self.np_poly = np.array(coordinates, dtype=np.int32).reshape((-1, 1, 2)) if coordinates and len(coordinates) >= 3 else None
         self.crossed_ids: set = set()
 
-    def get_endpoints(self, frame_w: int = 640, frame_h: int = 480) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-        """Compute (p1, p2) line endpoints for the current frame resolution."""
-        if self.fence_type == "horizontal":
-            y = int(frame_h * (max(0.0, min(100.0, self.position)) / 100.0))
-            return ((0, y), (frame_w, y))
-        elif self.fence_type == "vertical":
-            x = int(frame_w * (max(0.0, min(100.0, self.position)) / 100.0))
-            return ((x, 0), (x, frame_h))
-        elif self.fence_type == "line" and len(self.coordinates) >= 2:
-            return (self.coordinates[0], self.coordinates[1])
-        return ((0, 0), (0, 0))
+    def get_endpoints(self, frame_w: int = 1280, frame_h: int = 720) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """Compute pixel endpoints for line/vertical/horizontal fences."""
+        if self.fence_type == "vertical":
+            pos = self.position if self.position is not None else 50.0
+            x = int(frame_w * (pos / 100.0)) if pos <= 100.0 else int(pos)
+            return (x, 0), (x, frame_h)
+        elif self.fence_type == "horizontal":
+            pos = self.position if self.position is not None else 50.0
+            y = int(frame_h * (pos / 100.0)) if pos <= 100.0 else int(pos)
+            return (0, y), (frame_w, y)
+        elif len(self.coordinates) >= 2:
+            return self.coordinates[0], self.coordinates[1]
+        else:
+            # Fallback vertical 50%
+            pos = self.position if self.position is not None else 50.0
+            x = int(frame_w * (pos / 100.0)) if pos <= 100.0 else int(pos)
+            return (x, 0), (x, frame_h)
 
     def check_intrusion(
         self,
@@ -69,8 +67,8 @@ class VirtualFence:
         camera_id: str,
         camera_name: str,
         location: str,
-        frame_w: int = 640,
-        frame_h: int = 480
+        frame_w: int = 1280,
+        frame_h: int = 720
     ) -> Optional[AlertEvent]:
         """
         Check if the given track crossed or entered the virtual fence.
@@ -92,14 +90,8 @@ class VirtualFence:
         prev_pt = track.history[-2][1]
         curr_pt = track.centroid
 
-        if self.fence_type in ("horizontal", "vertical"):
-            p1, p2 = self.get_endpoints(frame_w, frame_h)
-            if lines_intersect(prev_pt, curr_pt, p1, p2):
-                track.crossed_fences.add(self.fence_id)
-                return self._create_alert(track, camera_id, camera_name, location)
-
-        elif self.fence_type == "line" and len(self.coordinates) >= 2:
-            p1, p2 = self.coordinates[0], self.coordinates[1]
+        if self.fence_type in ["line", "vertical", "horizontal"] or len(self.coordinates) >= 2:
+            p1, p2 = self.get_endpoints(frame_w=frame_w, frame_h=frame_h)
             if lines_intersect(prev_pt, curr_pt, p1, p2):
                 track.crossed_fences.add(self.fence_id)
                 return self._create_alert(track, camera_id, camera_name, location)
@@ -125,10 +117,5 @@ class VirtualFence:
             track_id=track.track_id,
             confidence=track.confidence,
             location=f"{location} - {self.name}",
-            metadata={
-                "fence_id": self.fence_id,
-                "fence_name": self.name,
-                "fence_type": self.fence_type,
-                "position": self.position
-            }
+            metadata={"fence_id": self.fence_id, "fence_name": self.name}
         )

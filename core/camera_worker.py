@@ -51,17 +51,14 @@ class CameraWorkerThread:
 
         # Parse virtual fences
         fences: List[VirtualFence] = []
-        vf = config.get("virtual_fence")
-        if vf and vf.get("enabled"):
-            f_type = str(vf.get("type", "horizontal")).lower()
-            pos = float(vf.get("position", 50.0))
-            name = vf.get("name") or f"Virtual {f_type.capitalize()} Fence"
+        for f_data in config.get("fences", []):
+            coords = [tuple(pt) for pt in f_data.get("coordinates", [])]
             fences.append(VirtualFence(
-                fence_id=f"vf_{self.camera_id}",
-                coordinates=[],
-                fence_type=f_type,
-                name=name,
-                position=pos
+                fence_id=f_data.get("id", f"fence_{self.camera_id}"),
+                coordinates=coords,
+                fence_type=f_data.get("type", "line"),
+                name=f_data.get("name", "Boundary Zone"),
+                position=f_data.get("position", 50.0)
             ))
 
         # Ingestion reader
@@ -90,7 +87,7 @@ class CameraWorkerThread:
         self.is_running = False
         self.display_thread: Optional[threading.Thread] = None
         self.ai_thread: Optional[threading.Thread] = None
-        self.lock = threading.RLock()
+        self.lock = threading.Lock()
         
         # Frame and metrics buffers
         self.latest_annotated_frame: Optional[np.ndarray] = None
@@ -318,25 +315,6 @@ class CameraWorkerThread:
                     })
         return suspects
 
-    def update_virtual_fence(self, fence_config: Dict[str, Any]):
-        """Dynamically update virtual fence on the fly in real-time without stream restart."""
-        with self.lock:
-            self.config["virtual_fence"] = fence_config
-            fences: List[VirtualFence] = []
-            if fence_config and fence_config.get("enabled"):
-                f_type = fence_config.get("type", "horizontal")
-                pos = float(fence_config.get("position", 50))
-                name = fence_config.get("name", f"Virtual {f_type.capitalize()} Fence")
-                fences.append(VirtualFence(
-                    fence_id=f"vf_{self.camera_id}",
-                    coordinates=[],
-                    fence_type=f_type,
-                    name=name,
-                    position=pos
-                ))
-            self.engine.set_fences(fences)
-            logger.info(f"[{self.camera_id}] Live Virtual Fence updated: {fence_config}")
-
     def get_status(self) -> Dict[str, Any]:
         """Retrieve real-time camera telemetry and processing statistics."""
         with self.lock:
@@ -360,13 +338,6 @@ class CameraWorkerThread:
                 "enable_face_detection": self.config.get("enable_face_detection", True),
                 "enable_anpr": self.config.get("enable_anpr", True),
                 "enable_night_mode": self.config.get("enable_night_mode", True),
-                "virtual_fence": self.config.get("virtual_fence", {
-                    "enabled": False,
-                    "type": "horizontal",
-                    "position": 50,
-                    "name": "Virtual Fence"
-                }),
-                "fences": self.config.get("fences", []),
                 "conf_threshold": self.conf_threshold
             }
 

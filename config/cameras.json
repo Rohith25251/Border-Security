@@ -4,74 +4,67 @@
     "name": "Camera 2 - Border Night Sector",
     "ip_address": "127.0.0.1",
     "rtsp_url": "rtsp://localhost:8554/camera2",
-    "location": "Sector B Night (127.0.0.1)",
     "fallback_file": "videos/camera2_night.mp4",
+    "location": "Sector B Night (127.0.0.1)",
     "frame_skip": 2,
     "conf_threshold": 0.4,
-    "target_inference_size": [
-      640,
-      640
-    ],
     "enable_face_detection": true,
     "enable_anpr": true,
     "enable_night_mode": true,
-    "virtual_fence": {
-      "enabled": false,
-      "type": "horizontal",
-      "position": 50.0,
-      "name": "Virtual Fence"
-    },
     "fences": [],
-    "status": "active"
+    "status": "active",
+    "created_at": "2026-09-11T17:25:24.99339+00:00",
+    "updated_at": "2026-09-12T05:53:41.791363+00:00"
   },
   {
     "id": "camera3",
     "name": "Camera 3 - Highway Checkpoint",
     "ip_address": "127.0.0.1",
     "rtsp_url": "rtsp://localhost:8554/camera3",
-    "location": "Sector C Highway (127.0.0.1)",
     "fallback_file": "videos/camera3_highway.mp4",
+    "location": "Sector C Highway (127.0.0.1)",
     "frame_skip": 2,
-    "conf_threshold": 0.4,
-    "target_inference_size": [
-      640,
-      640
-    ],
+    "conf_threshold": 0.25,
     "enable_face_detection": false,
     "enable_anpr": false,
     "enable_night_mode": false,
-    "virtual_fence": {
-      "enabled": false,
-      "type": "horizontal",
-      "position": 50.0,
-      "name": "Virtual Fence"
-    },
-    "fences": [],
-    "status": "active"
+    "fences": [
+      {
+        "id": "vf_camera3",
+        "name": "Vertical Barrier Line",
+        "type": "vertical",
+        "position": 50.0,
+        "coordinates": [
+          [
+            640,
+            0
+          ],
+          [
+            640,
+            720
+          ]
+        ]
+      }
+    ],
+    "status": "active",
+    "created_at": "2026-09-11T17:25:25.130349+00:00",
+    "updated_at": "2026-09-12T06:14:36.877675+00:00"
   },
   {
     "id": "cam_192_0_0_4_8080",
     "name": "Camera 1 - Border Daytime",
     "ip_address": "192.0.0.4:8080",
     "rtsp_url": "http://192.0.0.4:8080/video",
-    "location": "North Perimeter Gate (192.0.0.4)",
     "fallback_file": "",
+    "location": "North Perimeter Gate (192.0.0.4)",
     "frame_skip": 2,
     "conf_threshold": 0.25,
-    "target_inference_size": [
-      640,
-      640
-    ],
     "enable_face_detection": true,
     "enable_anpr": true,
     "enable_night_mode": true,
-    "virtual_fence": {
-      "enabled": false,
-      "type": "horizontal",
-      "position": 50.0,
-      "name": "Virtual Fence"
-    },
     "fences": [],
-    "status": "active"
+    "status": "active",
+    "created_at": "2026-09-11T17:48:52.700375+00:00",
+    "updated_at": "2026-09-12T04:33:08.771402+00:00"
   }
 ]

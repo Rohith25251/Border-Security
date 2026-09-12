@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, Moon, Sun, Users, Activity, Eye, Radio, AlertTriangle, Plus, Trash2, Globe, MapPin, Shield } from 'lucide-react';
+import { Camera, Moon, Sun, Users, Activity, Eye, Radio, AlertTriangle, Plus, Trash2, Globe, MapPin } from 'lucide-react';
 import AddCameraModal from './AddCameraModal';
 
 export default function CameraGrid({ cameras, onSelectSnapshot, onRefreshCameras }) {
@@ -97,7 +97,6 @@ export default function CameraGrid({ cameras, onSelectSnapshot, onRefreshCameras
           const isNight = cam.night_mode_active || cam.is_night;
           const isOffline = cam.is_connected === false;
           const camDisplayName = cam.camera_name || cam.name || cid;
-          const isFenceActive = Boolean(cam.virtual_fence?.enabled);
 
           return (
             <div key={cid} className="camera-card">
@@ -188,13 +187,6 @@ export default function CameraGrid({ cameras, onSelectSnapshot, onRefreshCameras
                     <Users size={12} color="#38bdf8" />
                     <span>{cam.active_tracks || 0} Targets</span>
                   </div>
-
-                  {isFenceActive && (
-                    <div className="hud-pill" style={{ background: 'rgba(239, 68, 68, 0.85)', color: '#ffffff', borderColor: '#ef4444' }}>
-                      <Shield size={12} color="#ffffff" />
-                      <span>{cam.virtual_fence?.type === 'vertical' ? 'Vert Fence' : 'Horiz Fence'}: {Math.round(cam.virtual_fence?.position ?? 50)}%</span>
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -244,4 +236,3 @@ export default function CameraGrid({ cameras, onSelectSnapshot, onRefreshCameras
     </div>
   );
 }
-

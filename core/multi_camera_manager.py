@@ -75,35 +75,6 @@ def parse_camera_config(data: Dict[str, Any]) -> Dict[str, Any]:
     if not location or not str(location).strip():
         location = f"Sector {ip_addr or 'Gate'}"
 
-    # Parse and sanitize virtual fence
-    raw_vf = data.get("virtual_fence")
-    if isinstance(raw_vf, dict):
-        vf = {
-            "enabled": bool(raw_vf.get("enabled", False)),
-            "type": str(raw_vf.get("type", "horizontal")).lower(),
-            "position": float(raw_vf.get("position", 50.0)),
-            "name": str(raw_vf.get("name") or f"Virtual {str(raw_vf.get('type', 'horizontal')).capitalize()} Fence")
-        }
-    else:
-        vf = {
-            "enabled": False,
-            "type": "horizontal",
-            "position": 50.0,
-            "name": "Virtual Fence"
-        }
-
-    # Ensure fences array is always in sync with virtual_fence
-    if vf["enabled"]:
-        fences = [{
-            "id": f"vf_{cam_id}",
-            "name": vf["name"],
-            "type": vf["type"],
-            "position": vf["position"],
-            "coordinates": []
-        }]
-    else:
-        fences = []
-
     return {
         "id": cam_id,
         "name": name,
@@ -117,8 +88,7 @@ def parse_camera_config(data: Dict[str, Any]) -> Dict[str, Any]:
         "enable_face_detection": bool(data.get("enable_face_detection", True)),
         "enable_anpr": bool(data.get("enable_anpr", True)),
         "enable_night_mode": bool(data.get("enable_night_mode", True)),
-        "virtual_fence": vf,
-        "fences": fences,
+        "fences": data.get("fences", []),
         "status": data.get("status", "active")
     }
 
@@ -164,10 +134,9 @@ class MultiCameraManager:
                 db_cams = self.supabase_manager.fetch_cameras()
                 if db_cams and len(db_cams) > 0:
                     logger.info(f"Loaded {len(db_cams)} camera(s) from Supabase 'cameras' table.")
-                    parsed_cams = [parse_camera_config(c) for c in db_cams]
                     # Also persist local cache
-                    self._save_local_json(parsed_cams)
-                    return parsed_cams
+                    self._save_local_json(db_cams)
+                    return db_cams
             except Exception as e:
                 logger.warning(f"Failed to fetch cameras from Supabase: {e}")
 
@@ -175,8 +144,7 @@ class MultiCameraManager:
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "r") as f:
-                    raw_configs = json.load(f)
-                    configs = [parse_camera_config(c) for c in raw_configs]
+                    configs = json.load(f)
                     logger.info(f"Loaded {len(configs)} camera(s) from local {self.config_path}")
             except Exception as e:
                 logger.error(f"Failed to read camera config {self.config_path}: {e}")
@@ -247,7 +215,7 @@ class MultiCameraManager:
         return cfg
 
     def update_camera(self, camera_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Update existing camera parameters in real time without thread tearing or reload delay."""
+        """Update existing camera parameters and restart worker if stream URL changed."""
         cfg = next((c for c in self.camera_configs if c.get("id") == camera_id), None)
         if not cfg:
             return None
@@ -267,95 +235,29 @@ class MultiCameraManager:
                 break
 
         self._save_local_json(self.camera_configs)
-        
-        # Asynchronously sync to Supabase in background without blocking API response
         if self.supabase_manager:
-            import threading
-            def _async_supa_update():
-                try:
-                    self.supabase_manager.update_camera(camera_id, parsed)
-                except Exception as e:
-                    logger.warning(f"Error updating camera in Supabase: {e}")
-            threading.Thread(target=_async_supa_update, daemon=True).start()
+            try:
+                self.supabase_manager.update_camera(camera_id, parsed)
+            except Exception as e:
+                logger.warning(f"Error updating camera in Supabase: {e}")
 
-        # In-place worker update without dropping thread or re-instantiating heavy models
-        worker = self.workers.get(camera_id)
-        if worker:
-            with worker.lock:
-                worker.config = parsed
-                worker.camera_name = parsed.get("name", worker.camera_name)
-                worker.location = parsed.get("location", worker.location)
-                worker.conf_threshold = float(parsed.get("conf_threshold", worker.conf_threshold))
-                if worker.engine:
-                    worker.engine.camera_name = worker.camera_name
-                    worker.engine.location = worker.location
-                    worker.engine.enable_face_detection = bool(parsed.get("enable_face_detection", True))
-                    worker.engine.enable_anpr = bool(parsed.get("enable_anpr", True))
-                    worker.engine.enable_night_mode = bool(parsed.get("enable_night_mode", True))
-                    if hasattr(worker.engine, 'detector') and worker.engine.detector:
-                        worker.engine.detector.conf_threshold = worker.conf_threshold
-                
-                # Update virtual fence on running worker
-                worker.update_virtual_fence(parsed.get("virtual_fence", {}))
-
-                # If stream URL changed, restart reader
-                new_rtsp = parsed.get("rtsp_url", "")
-                if new_rtsp and new_rtsp != worker.rtsp_url:
-                    worker.rtsp_url = new_rtsp
-                    worker.reader.stop()
-                    worker.reader = RTSPStreamReader(rtsp_url=new_rtsp, camera_id=camera_id)
-                    if worker.is_running:
-                        worker.reader.start()
-
-        logger.info(f"Updated camera [{camera_id}] in-place successfully.")
-        return parsed
-
-    def update_camera_fence(self, camera_id: str, fence_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Dynamically update virtual fence settings for a camera in real time and persist."""
-        cfg = next((c for c in self.camera_configs if c.get("id") == camera_id), None)
-        if not cfg:
-            return None
-
-        # Sanitize fence_config
-        clean_fence = {
-            "enabled": bool(fence_config.get("enabled", False)),
-            "type": str(fence_config.get("type", "horizontal")).lower(),
-            "position": float(fence_config.get("position", 50)),
-            "name": fence_config.get("name") or f"Virtual {str(fence_config.get('type', 'horizontal')).capitalize()} Fence"
-        }
-        cfg["virtual_fence"] = clean_fence
-
-        # Also update fences array for backward compatibility
-        if clean_fence["enabled"]:
-            cfg["fences"] = [{
-                "id": f"vf_{camera_id}",
-                "name": clean_fence["name"],
-                "type": clean_fence["type"],
-                "position": clean_fence["position"],
-                "coordinates": []
-            }]
-        else:
-            cfg["fences"] = []
-
-        # Update in-memory worker in real time without dropping stream
+        # Restart worker if stream URL changed or running
         if camera_id in self.workers:
-            self.workers[camera_id].update_virtual_fence(clean_fence)
+            old_worker = self.workers.pop(camera_id)
+            old_worker.stop()
 
-        # Save to local json
-        self._save_local_json(self.camera_configs)
+        new_worker = CameraWorkerThread(
+            config=parsed,
+            alert_queue=self.alert_queue,
+            supabase_manager=self.supabase_manager,
+            yolo_model=self.yolo_model,
+            device=self.device
+        )
+        self.workers[camera_id] = new_worker
+        if self.is_running:
+            new_worker.start()
 
-        # Sync to Supabase in background if connected
-        if self.supabase_manager:
-            import threading
-            def _async_fence_update():
-                try:
-                    self.supabase_manager.update_camera(camera_id, cfg)
-                except Exception as e:
-                    logger.warning(f"Error updating camera fence in Supabase: {e}")
-            threading.Thread(target=_async_fence_update, daemon=True).start()
-
-        logger.info(f"[{camera_id}] Virtual fence updated in manager: {clean_fence}")
-        return cfg
+        return parsed
 
     def remove_camera(self, camera_id: str) -> bool:
         """Dynamically stop and delete camera."""
@@ -368,15 +270,12 @@ class MultiCameraManager:
         self.camera_configs = [c for c in self.camera_configs if c.get("id") != camera_id]
         self._save_local_json(self.camera_configs)
 
-        # Remove from Supabase in background
+        # Remove from Supabase
         if self.supabase_manager:
-            import threading
-            def _async_delete_cam():
-                try:
-                    self.supabase_manager.delete_camera(camera_id)
-                except Exception as e:
-                    logger.warning(f"Error deleting camera from Supabase: {e}")
-            threading.Thread(target=_async_delete_cam, daemon=True).start()
+            try:
+                self.supabase_manager.delete_camera(camera_id)
+            except Exception as e:
+                logger.warning(f"Error deleting camera from Supabase: {e}")
 
         logger.info(f"Removed camera: [{camera_id}]")
         return True
