@@ -8,6 +8,8 @@ import os
 import cv2
 import time
 import logging
+import threading
+import platform
 from typing import List, Tuple, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -23,6 +25,21 @@ from core.anpr import ANPRReader
 from core.behavior_analytics import BehaviorAnalyzer
 
 logger = logging.getLogger(__name__)
+
+
+def _play_facial_match_buzzer():
+    """Trigger system/hardware buzzer sound on facial recognition match in background thread."""
+    try:
+        if platform.system() == "Windows":
+            import winsound
+            for _ in range(3):
+                winsound.Beep(850, 150)
+                time.sleep(0.05)
+        else:
+            print("\a", end="", flush=True)
+    except Exception:
+        pass
+
 
 # Visual theme colors (BGR)
 COLOR_HUMAN = (0, 215, 255)         # Gold / Amber for general person
@@ -293,6 +310,9 @@ class FrameProcessingEngine:
                             now_ts = timestamp or time.time()
                             if (now_ts - self.matched_alerts_sent.get(alert_key, 0.0)) >= self.match_alert_cooldown:
                                 self.matched_alerts_sent[alert_key] = now_ts
+
+                                # Sound the security buzzer alert on facial match
+                                threading.Thread(target=_play_facial_match_buzzer, daemon=True).start()
 
                                 # Pull profile data from in-memory cache ONLY — zero network latency
                                 prof_entry = self.face_recognizer.known_profiles.get(matched_id, {})

@@ -19,6 +19,52 @@ let chartCameras = null;
 let currentAlerts = [];
 let telemetryInterval = null;
 let alertsPollingInterval = null;
+let seenFaceAlertIds = new Set();
+let isInitialAlertsLoaded = false;
+
+function playFacialMatchBuzzerSound() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    if (ctx.state === 'suspended') ctx.resume();
+
+    const pulses = [0, 0.2, 0.4];
+    const pulseLen = 0.14;
+
+    pulses.forEach((offset) => {
+      const startTime = ctx.currentTime + offset;
+      const stopTime = startTime + pulseLen;
+
+      const osc1 = ctx.createOscillator();
+      osc1.type = 'sawtooth';
+      osc1.frequency.setValueAtTime(580, startTime);
+      osc1.frequency.linearRampToValueAtTime(460, stopTime);
+
+      const osc2 = ctx.createOscillator();
+      osc2.type = 'square';
+      osc2.frequency.setValueAtTime(870, startTime);
+      osc2.frequency.linearRampToValueAtTime(690, stopTime);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.45, startTime + 0.015);
+      gain.gain.setValueAtTime(0.45, stopTime - 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, stopTime);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc1.start(startTime);
+      osc2.start(startTime);
+      osc1.stop(stopTime);
+      osc2.stop(stopTime);
+    });
+  } catch (err) {
+    console.warn('Buzzer sound playback error:', err);
+  }
+}
 
 // Initialize on page load
 document.addEventListener("DOMContentLoaded", () => {
@@ -186,6 +232,18 @@ async function fetchAlerts() {
     const res = await fetch(`${API_BASE_URL}/api/alerts?${params.toString()}`);
     if (!res.ok) return;
     currentAlerts = await res.json();
+    if (Array.isArray(currentAlerts)) {
+      if (isInitialAlertsLoaded) {
+        const hasNewFaceMatch = currentAlerts.some(
+          a => a.event_type === "face_detected" && !seenFaceAlertIds.has(a.id)
+        );
+        if (hasNewFaceMatch) playFacialMatchBuzzerSound();
+      }
+      currentAlerts.forEach(a => {
+        if (a.event_type === "face_detected") seenFaceAlertIds.add(a.id);
+      });
+      isInitialAlertsLoaded = true;
+    }
     renderAlertsTable(currentAlerts);
   } catch (err) {
     console.error("Error fetching alerts:", err);

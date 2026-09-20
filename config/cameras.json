@@ -53,8 +53,8 @@
   {
     "id": "cam_192_0_0_4_8080",
     "name": "Camera 1 - Border Daytime",
-    "ip_address": "192.0.0.4:8080",
-    "rtsp_url": "http://192.0.0.4:8080/video",
+    "ip_address": "10.131.111.151:8080",
+    "rtsp_url": "http://10.131.111.151:8080/video",
     "fallback_file": "",
     "location": "North Perimeter Gate (192.0.0.4)",
     "frame_skip": 2,

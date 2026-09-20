@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import CameraGrid from './components/CameraGrid';
 import DirectCCTVView from './components/DirectCCTVView';
@@ -25,6 +25,60 @@ export default function App() {
 
   const [liveSuspects, setLiveSuspects] = useState([]);
   const [inspectedSuspectAlert, setInspectedSuspectAlert] = useState(null);
+
+  const seenFaceAlertIdsRef = useRef(new Set());
+  const initialAlertsFetchedRef = useRef(false);
+
+  // Security Alarm Buzzer Sound for Facial Recognition Matches
+  const playFacialMatchBuzzerSound = useCallback(() => {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      // 3 urgent, pulsed buzzer bursts (BZZZ - BZZZ - BZZZ)
+      const pulses = [0, 0.2, 0.4];
+      const pulseLen = 0.14;
+
+      pulses.forEach((offset) => {
+        const startTime = ctx.currentTime + offset;
+        const stopTime = startTime + pulseLen;
+
+        // Primary oscillator (harsh sawtooth alarm tone)
+        const osc1 = ctx.createOscillator();
+        osc1.type = 'sawtooth';
+        osc1.frequency.setValueAtTime(580, startTime);
+        osc1.frequency.linearRampToValueAtTime(460, stopTime);
+
+        // Secondary oscillator (square wave harmonic for industrial buzzer bite)
+        const osc2 = ctx.createOscillator();
+        osc2.type = 'square';
+        osc2.frequency.setValueAtTime(870, startTime);
+        osc2.frequency.linearRampToValueAtTime(690, stopTime);
+
+        // Gain envelope for punchy attack & release
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.001, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.45, startTime + 0.015);
+        gain.gain.setValueAtTime(0.45, stopTime - 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, stopTime);
+
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc1.start(startTime);
+        osc2.start(startTime);
+        osc1.stop(stopTime);
+        osc2.stop(stopTime);
+      });
+    } catch (err) {
+      console.warn('Buzzer sound playback error:', err);
+    }
+  }, []);
 
   // Fetch live suspects currently visible in camera frames
   const fetchLiveSuspects = useCallback(async () => {
@@ -79,13 +133,30 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
+          if (initialAlertsFetchedRef.current) {
+            let hasNewFaceMatch = false;
+            data.forEach((a) => {
+              if (a.event_type === 'face_detected' && !seenFaceAlertIdsRef.current.has(a.id)) {
+                hasNewFaceMatch = true;
+              }
+            });
+            if (hasNewFaceMatch) {
+              playFacialMatchBuzzerSound();
+            }
+          }
+          data.forEach((a) => {
+            if (a.event_type === 'face_detected') {
+              seenFaceAlertIdsRef.current.add(a.id);
+            }
+          });
+          initialAlertsFetchedRef.current = true;
           setAlerts(data);
         }
       }
     } catch {
       // Keep existing alerts if fetch fails
     }
-  }, []);
+  }, [playFacialMatchBuzzerSound]);
 
   // Fetch statistics
   const fetchStats = useCallback(async () => {
@@ -192,6 +263,29 @@ export default function App() {
     }
   };
 
+  // Unlock Web Audio on first user interaction to comply with browser autoplay policies
+  useEffect(() => {
+    const unlockAudio = () => {
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+          const dummyCtx = new AudioContextClass();
+          dummyCtx.resume().then(() => {
+            dummyCtx.close();
+          });
+        }
+      } catch (_) {}
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+    window.addEventListener('click', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
   // Pin alert when suspect is first detected — don't re-derive every poll tick (avoids flicker)
   const [pinnedSuspectAlert, setPinnedSuspectAlert] = useState(null);
 
@@ -205,19 +299,8 @@ export default function App() {
         : null;
       if (incomingKey !== currentKey) {
         setPinnedSuspectAlert(incoming);
-        // Audible alert beep
-        try {
-          const ctx = new (window.AudioContext || window.webkitAudioContext)();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.frequency.value = 880;
-          gain.gain.setValueAtTime(0.3, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-          osc.start(ctx.currentTime);
-          osc.stop(ctx.currentTime + 0.4);
-        } catch (_) {}
+        // Play security buzzer sound on facial recognition match
+        playFacialMatchBuzzerSound();
       }
     } else {
       // Suspect left camera view — clear alert
@@ -225,7 +308,7 @@ export default function App() {
         setPinnedSuspectAlert(null);
       }
     }
-  }, [liveSuspects, inspectedSuspectAlert]);
+  }, [liveSuspects, inspectedSuspectAlert, playFacialMatchBuzzerSound]);
 
   // Active suspect is derived in real time from live camera tracking
   const activeSuspectAlert = inspectedSuspectAlert || pinnedSuspectAlert;
